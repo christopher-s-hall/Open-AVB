@@ -34,14 +34,14 @@
 #include <ieee1588.hpp>
 #include <avbts_clock.hpp>
 #include <avbts_message.hpp>
-#include <avbts_port.hpp>
+#include <min_port.hpp>
 #include <avbts_ostimer.hpp>
 
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
 
-PTPMessageCommon::PTPMessageCommon(IEEE1588Port * port)
+PTPMessageCommon::PTPMessageCommon( MediaDependentPort *port )
 {
 	// Fill in fields using port/clock dataset as a template
 	versionPTP = GPTP_VERSION;
@@ -65,7 +65,8 @@ bool PTPMessageCommon::isSenderEqual(PortIdentity portIdentity)
 }
 
 PTPMessageCommon *buildPTPMessage
-(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port)
+( char *buf, int size, LinkLayerAddress *remote, MediaDependentPort *port,
+  bool *event )
 {
 	OSTimer *timer = port->getTimerFactory()->createTimer();
 	PTPMessageCommon *msg = NULL;
@@ -95,8 +96,9 @@ PTPMessageCommon *buildPTPMessage
 	memcpy(&tspec_msg_t,
 	       buf + PTP_COMMON_HDR_TRANSSPEC_MSGTYPE(PTP_COMMON_HDR_OFFSET),
 	       sizeof(tspec_msg_t));
+
 	messageType = (MessageType) (tspec_msg_t & 0xF);
-	transportSpecific = (tspec_msg_t >> 4) & 0x0F;
+	*event = (messageType & 0xF) >> 3 ? false : true;
 
 	sourcePortIdentity = new PortIdentity
 		((uint8_t *)
@@ -114,6 +116,7 @@ PTPMessageCommon *buildPTPMessage
 
 	GPTP_LOG_VERBOSE("Captured Sequence Id: %u", sequenceId);
 
+#if 0
 	if (!(messageType >> 3)) {
 		int iter = 5;
 		long req = 4000;	// = 1 ms
@@ -148,7 +151,9 @@ PTPMessageCommon *buildPTPMessage
 		}
 
 	}
+#endif
 
+	transportSpecific = (tspec_msg_t >> 4) & 0x0F;
 	if (1 != transportSpecific) {
 		GPTP_LOG_EXCEPTION("*** Received message with unsupported transportSpecific type=%d", transportSpecific);
 		goto abort;
@@ -521,8 +526,6 @@ PTPMessageCommon *buildPTPMessage
 	       buf + PTP_COMMON_HDR_LOG_MSG_INTRVL(PTP_COMMON_HDR_OFFSET),
 	       sizeof(msg->logMeanMessageInterval));
 
-	port->addSockAddrMap(msg->sourcePortIdentity, remote);
-
 	msg->_timestamp = timestamp;
 	msg->_timestamp_counter_value = counter_value;
 
@@ -537,10 +540,10 @@ abort:
 	return NULL;
 }
 
-void PTPMessageCommon::processMessage(IEEE1588Port * port)
+bool PTPMessageCommon::processMessage( MediaDependentPort * port )
 {
 	_gc = true;
-	return;
+	return true;
 }
 
 void PTPMessageCommon::buildCommonHeader(uint8_t * buf)
@@ -661,21 +664,23 @@ PTPMessageSync::PTPMessageSync() {
 PTPMessageSync::~PTPMessageSync() {
 }
 
-PTPMessageSync::PTPMessageSync(IEEE1588Port * port) : PTPMessageCommon(port)
+PTPMessageSync::PTPMessageSync( MediaDependentPort *port )
+	: PTPMessageEther(port)
 {
 	messageType = SYNC_MESSAGE;	// This is an event message
-	sequenceId = port->getNextSyncSequenceId();
+	sequenceId = port->getPort()->getNextSyncSequenceId();
 	control = SYNC;
 
 	flags[PTP_ASSIST_BYTE] |= (0x1 << PTP_ASSIST_BIT);
 
 	originTimestamp = port->getClock()->getTime();
 
-	logMeanMessageInterval = port->getSyncInterval();
+	logMeanMessageInterval = port->getPort()->getSyncInterval();
+
 	return;
 }
 
-void PTPMessageSync::sendPort(IEEE1588Port * port, PortIdentity * destIdentity)
+void PTPMessageSync::sendPort( MediaDependentEtherPort *port )
 {
 	uint8_t buf_t[256];
 	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
@@ -704,7 +709,8 @@ void PTPMessageSync::sendPort(IEEE1588Port * port, PortIdentity * destIdentity)
 	       &(originTimestamp_BE.nanoseconds),
 	       sizeof(originTimestamp.nanoseconds));
 
-	port->sendEventPort(PTP_ETHERTYPE, buf_t, messageLength, MCAST_OTHER, destIdentity);
+	port->sendEventPort
+		( PTP_ETHERTYPE, buf_t, messageLength, MCAST_OTHER );
 	port->incCounter_ieee8021AsPortStatTxSyncCount();
 
 	return;
@@ -1746,7 +1752,8 @@ void PTPMessageSignalling::setintervals(int8_t linkDelayInterval, int8_t timeSyn
 	tlv.setAnnounceInterval(announceInterval);
 }
 
-void PTPMessageSignalling::sendPort(IEEE1588Port * port, PortIdentity * destIdentity)
+void PTPMessageSignalling::sendPort( MediaDependentPort * port,
+				     PortIdentity *destIdentity)
 {
 	uint8_t buf_t[256];
 	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
@@ -1764,7 +1771,7 @@ void PTPMessageSignalling::sendPort(IEEE1588Port * port, PortIdentity * destIden
 
 	tlv.toByteString(buf_ptr + PTP_COMMON_HDR_LENGTH + PTP_SIGNALLING_LENGTH);
 
-	port->sendGeneralPort(PTP_ETHERTYPE, buf_t, messageLength, MCAST_OTHER, destIdentity);
+	port->sendGeneralMessage(PTP_ETHERTYPE, buf_t, messageLength, MCAST_OTHER, destIdentity);
 }
 
 void PTPMessageSignalling::processMessage(IEEE1588Port * port)

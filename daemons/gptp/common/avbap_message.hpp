@@ -90,7 +90,7 @@ class APMessageTestStatus {
 	 * @brief Default constructor. Creates APMessageTestStatus
 	 * @param port IEEE1588Port
 	 */
-	APMessageTestStatus(IEEE1588Port * port);
+	APMessageTestStatus( MediaDependentPort *port );
 
 	/**
 	 * @brief Destroys APMessageTestStatus interface
@@ -99,11 +99,11 @@ class APMessageTestStatus {
 
 	/**
 	 * @brief  Assembles APMessageTestStatus message on the
-	 *  	   IEEE1588Port payload
+	 *  	   MediaDependentPort payload
 	 * @param  port IEEE1588Port where the message will be assembled
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port);
+	void sendPort( MediaDependentPort *port );
 };
 
 

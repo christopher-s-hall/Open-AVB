@@ -325,12 +325,22 @@ class OSNetworkInterface {
 	 /**
 	  * @brief Watch for netlink changes.
 	  */
-	 virtual void watchNetLink(IEEE1588Port *pPort) = 0;
+	 virtual void watchNetLink(MediaDependentPort *pPort) = 0;
 
 	 /**
 	  * @brief  Provides generic method for getting the payload offset
 	  */
 	 virtual unsigned getPayloadOffset() = 0;
+
+	/**
+	 * @brief   Generic method for clearing/disabling RX queue
+	 */
+	virtual net_result disable_clear_rx_queue() { return net_fatal; }
+
+	/**
+	 * @brief   Generic method for re-enabling RX queue
+	 */
+	virtual net_result reenable_rx_queue() { return net_fatal; }
 
 	 /**
 	  * @brief Native support for polimorphic destruction

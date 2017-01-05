@@ -46,6 +46,40 @@
 #include <string.h>
 
 #include <math.h>
+#include <vector>
+
+typedef std::vector<MediaDependentPort *> PortList;
+typedef PortList::const_iterator PortListIter;
+
+struct ClockPortIter
+{
+	PortListIter iter;
+};
+
+struct ClockPortList
+{
+	PortList list;
+};
+
+void IEEE1588Clock::getPortIter( ClockPortIter_t *iter )
+{
+	iter = std::make_unique<struct ClockPortIter>();
+	iter->iter = port_list->list.cbegin();
+}
+
+MediaDependentPort *IEEE1588Clock::getNextPort( ClockPortIter_t iter )
+{
+	MediaDependentPort *ret;
+
+	if( iter->iter != port_list->list.cend() )
+	{
+		ret = *iter->iter;
+		++iter->iter;
+	} else
+		ret = NULL;
+
+	return ret;
+}
 
 std::string ClockIdentity::getIdentityString()
 {
@@ -460,6 +494,89 @@ bool IEEE1588Clock::isBetterThan(PTPMessageAnnounce * msg)
 
 	return (memcmp(this1, that1, 14) < 0) ? true : false;
 }
+
+void IEEE1588Clock::registerPort
+( IEEE1588Port * port, uint16_t index, IEEE1588PortInit_t *portInit )
+{
+	if( isGM == undefined )
+	{
+		isGM = (tristate_t) portInit->isGM;
+	}
+	else if( isGM != (tristate_t) portInit->isGM )
+	{
+		GPTP_LOG_ERROR( "All ports must have the same isGM "
+				"configuration\n" );
+		return false;
+	}
+
+	lock();
+	port_list->list.push_back( port );
+	unlock();
+
+	return true;
+}
+
+
+void IEEE1588Clock::restartPDelayAll()
+{
+	TimetamperPortIter *iter;
+	MediaIndependentPort *port;
+	
+	getPortIter( &iter );
+
+	port = getNextPort( iter );
+	while( port != NULL )
+	{
+		ports->restartPDelay();
+		port = getNextPort( iter );
+	}
+}
+
+int IEEE1588Clock::getTxLockAll()
+{
+	TimetamperPortIter *iter;
+	MediaIndependentPort *port;
+	
+	getPortIter( &iter );
+
+	port = getNextPort( iter );
+	while( port != NULL )
+	{
+		if( port->getTxLock() == false ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int IEEE1588Clock::putTxLockAll()
+{
+	TimetamperPortIter *iter;
+	MediaIndependentPort *port;
+	
+	getPortIter( &iter );
+
+	port = getNextPort( iter );
+	while( port != NULL )
+	{
+		port->putTxLock();
+		port = getNextPort( iter );
+	}
+
+	return true;
+}
+
+void IEEE1588Clock::updateFUPInfo(void)
+{
+	fup_info->incrementGMTimeBaseIndicator();
+	fup_info->setScaledLastGmFreqChange
+		( fup_status->getScaledLastGmFreqChange() );
+	fup_info->setScaledLastGmPhaseChange
+		( fup_status->getScaledLastGmPhaseChange() );
+}
+
+
 
 IEEE1588Clock::~IEEE1588Clock(void)
 {

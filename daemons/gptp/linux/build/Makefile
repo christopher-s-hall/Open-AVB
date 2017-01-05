@@ -31,7 +31,7 @@
 ALTERNATE_LINUX_INCPATH=$(HOME)/header/include/
 
 CFLAGS_G = -Wall -g -I. -I../../common -I../src \
-	-I$(ALTERNATE_LINUX_INCPATH)
+	-I$(ALTERNATE_LINUX_INCPATH) -fdiagnostics-color=always
 
 # Check to see if PTP cross-timestamping is supported in hardware/driver
 # and, if so, add flag to compile in support
@@ -56,7 +56,9 @@ OBJ_DIR = obj
 OBJ_FILES = $(OBJ_DIR)/ptp_message.o\
 		 $(OBJ_DIR)/ap_message.o\
 		 $(OBJ_DIR)/avbts_osnet.o\
-		 $(OBJ_DIR)/ieee1588port.o\
+		 $(OBJ_DIR)/min_port.o\
+		 $(OBJ_DIR)/mdport.o\
+		 $(OBJ_DIR)/md_ethport.o\
 		 $(OBJ_DIR)/ieee1588clock.o \
 		 $(OBJ_DIR)/linux_hal_common.o\
 		 $(OBJ_DIR)/linux_hal_persist_file.o\

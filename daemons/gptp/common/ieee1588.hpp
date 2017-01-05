@@ -53,6 +53,7 @@
 
 #define PTP_CLOCK_IDENTITY_LENGTH 8		/*!< Size of a clock identifier stored in the ClockIndentity class, described at IEEE 802.1AS Clause 8.5.2.4*/
 
+#define SLAVE_ONLY_PRIO	255	/*!< Priority1 value indicating device is not GM-capable */
 
 /**
  * @brief Return codes for gPTP
@@ -60,7 +61,6 @@
 #define GPTP_EC_SUCCESS     0       /*!< No errors.*/
 #define GPTP_EC_FAILURE     -1      /*!< Generic error */
 #define GPTP_EC_EAGAIN      -72     /*!< Error: Try again */
-
 
 class LinkLayerAddress;
 struct ClockQuality;
@@ -71,9 +71,26 @@ class PTPMessageAnnounce;
 class PTPMessagePathDelayReq;
 class PTPMessagePathDelayResp;
 class PTPMessagePathDelayRespFollowUp;
-class IEEE1588Port;
+class MediaIndependentPort;
+class MediaDependentPort;
 class IEEE1588Clock;
 class OSNetworkInterface;
+class OSConditionFactory;
+class OSThreadFactory;
+class OSTimerFactory;
+class OSLockFactory;
+class Timestamper;
+class InterfaceLabel;
+
+/**
+ * @brief Enumeration multicast type.
+ */
+typedef enum {
+	MCAST_NONE,
+	MCAST_PDELAY,
+	MCAST_TEST_STATUS,
+	MCAST_OTHER
+} MulticastType;
 
 /**
  * @enum Event
@@ -86,6 +103,7 @@ typedef enum {
 	INITIALIZE,							//!< Same as POWERUP.
 	LINKUP,								//!< Triggered when link comes up.
 	LINKDOWN,							//!< Triggered when link goes down.
+	LINKWATCH_EXIT,				//! Link watch exited
 	STATE_CHANGE_EVENT,					//!< Signalizes that something has changed. Recalculates best master.
 	SYNC_INTERVAL_TIMEOUT_EXPIRES,		//!< Sync interval expired. Its time to send a sync message.
 	PDELAY_INTERVAL_TIMEOUT_EXPIRES,	//!< PDELAY interval expired. Its time to send pdelay_req message
@@ -104,8 +122,8 @@ typedef enum {
  * @brief Defines an event descriptor type
  */
 typedef struct {
-	IEEE1588Port *port;	//!< IEEE 1588 Port
-	Event event;	//!< Event enumeration
+	MediaIndependentPort *port;	//!< IEEE 1588 Port
+	Event event;			//!< Event enumeration
 } event_descriptor_t;
 
 struct phy_delay
@@ -115,6 +133,67 @@ struct phy_delay
    int gb_tx_phy_delay;
    int gb_rx_phy_delay;
 };
+
+/**
+ * @brief Structure for initializing the IEEE1588 class
+ */
+typedef struct {
+	/* clock IEEE1588Clock instance */
+	IEEE1588Clock * clock;
+
+	/* index Interface index */
+	uint16_t index;
+
+	/* timestamper Hardware timestamper instance */
+	Timestamper *timestamper;
+
+	/* offset  Initial clock offset */
+	int32_t offset;
+
+	/* net_label Network label */
+	InterfaceLabel * net_label;
+
+	/* automotive_profile set the AVnu automotive profile */
+	bool automotive_profile;
+
+	/* Set to true if the port is the grandmaster. Used for fixed GM in the the AVnu automotive profile */
+	bool isGM;
+
+	/* Set to true if the port is the grandmaster. Used for fixed GM in the the AVnu automotive profile */
+	bool testMode;
+
+	/* Set to true, if this port should attempt syntonization */
+	bool syntonize;
+
+	/* gPTP 10.2.4.4 */
+	char initialLogSyncInterval;
+
+	/* gPTP 10.6.2.2 */
+	char initialLogAnnounceInterval;
+
+	/* gPTP 11.5.2.2 */
+	char initialLogPdelayReqInterval;
+
+	/* CDS 6.2.1.5 */
+	char operLogPdelayReqInterval;
+
+	/* CDS 6.2.1.6 */
+	char operLogSyncInterval;
+
+	/* condition_factory OSConditionFactory instance */
+	OSConditionFactory * condition_factory;
+
+	/* thread_factory OSThreadFactory instance */
+	OSThreadFactory * thread_factory;
+
+	/* timer_factory OSTimerFactory instance */
+	OSTimerFactory * timer_factory;
+
+	/* lock_factory OSLockFactory instance */
+	OSLockFactory * lock_factory;
+
+	struct phy_delay phy_delay;
+} IEEE1588PortInit_t;
 
 /**
  * @brief Provides a generic InterfaceLabel class
@@ -458,15 +537,10 @@ static inline void TIMESTAMP_ADD_NS( Timestamp &ts, uint64_t ns ) {
 	   ts.nanoseconds = (uint32_t)nanos;
 }
 
-#define HWTIMESTAMPER_EXTENDED_MESSAGE_SIZE 4096	/*!< Maximum size of HWTimestamper extended message */
-
-/**
- * @brief Provides a generic interface for hardware timestamping
- */
 class HWTimestamper {
 
 protected:
-	uint8_t version; //!< HWTimestamper version
+	uint8_t version; 
 	struct phy_delay delay;
 public:
 	/**
@@ -478,13 +552,6 @@ public:
 	virtual bool HWTimestamper_init
 		( InterfaceLabel *iface_label, OSNetworkInterface *iface )
 		{ return true; }
-
-	/**
-	 * @brief Reset the hardware timestamp unit
-	 * @return void
-	 */
-	virtual void HWTimestamper_reset(void) {
-	}
 
 	/**
 	 * @brief  This method is called before the object is de-allocated.
@@ -602,58 +669,7 @@ public:
 	int getVersion() {
 		return version;
 	}
-	/**
-	 * @brief Initializes the PHY delay for TX and RX
-	 * @param [input] mb_tx_phy_delay, mb_rx_phy_delay, gb_tx_phy_delay, gb_rx_phy_delay
-	 * @return 0
-	 **/
 
-	 int init_phy_delay(int phy_delay[4])
-	 {
-		delay.gb_tx_phy_delay = phy_delay[0];
-		delay.gb_rx_phy_delay = phy_delay[1];
-		delay.mb_tx_phy_delay = phy_delay[2];
-		delay.mb_rx_phy_delay = phy_delay[3];
-
-
-		return 0;
-	 }
-
-	 /**
-	  * @brief Returns the the PHY delay for TX and RX
-	  * @param [input] struct phy_delay  pointer
-	  * @return 0
-	  **/
-
-	 int get_phy_delay (struct phy_delay *get_delay)
-	 {
-		get_delay->mb_tx_phy_delay = delay.mb_tx_phy_delay;
-		get_delay->mb_rx_phy_delay = delay.mb_rx_phy_delay;
-		get_delay->gb_tx_phy_delay = delay.gb_tx_phy_delay;
-		get_delay->gb_rx_phy_delay = delay.gb_rx_phy_delay;
-
-		return 0;
-	 }
-
-	 /**
-	 * @brief Sets the the PHY delay for TX and RX
-	 * @param [input] struct phy_delay  pointer
-	 * @return 0
-	 **/
-
-	 int set_phy_delay(struct phy_delay *set_delay)
-	 {
-		 delay.mb_tx_phy_delay = set_delay->mb_tx_phy_delay;
-		 delay.mb_rx_phy_delay = set_delay->mb_rx_phy_delay;
-		 delay.gb_tx_phy_delay = set_delay->gb_tx_phy_delay;
-		 delay.gb_rx_phy_delay = set_delay->gb_rx_phy_delay;
-
-		 return 0;
-	 }
-
-	 /**
-	 * @brief Default constructor. Sets version to zero.
-	 */
 	HWTimestamper() { version = 0; }
 
 	 /**
@@ -670,8 +686,7 @@ public:
  * @param  port [in] IEEE1588 port
  * @return PTP message instance of PTPMessageCommon
  */
-PTPMessageCommon *buildPTPMessage(char *buf, int size,
-		LinkLayerAddress * remote,
-		IEEE1588Port * port);
+PTPMessageCommon *buildPTPMessage
+(char *buf, int size, LinkLayerAddress * remote, MediaDependentPort * port);
 
 #endif

@@ -36,7 +36,6 @@
 
 #include <stdint.h>
 #include <ptptypes.hpp>
-#include <avbts_port.hpp>
 
 /**@file*/
 

@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <avbts_osnet.hpp>
 #include <ieee1588.hpp>
+#include <md_ethport.hpp>
 
 #include <list>
 #include <algorithm>
@@ -124,9 +125,6 @@
 #define PTP_PTPTIMESCALE_BYTE 1	/*!< PTPTIMESCALE byte offset on flags field*/
 #define PTP_PTPTIMESCALE_BIT 3	/*!< PTPTIMESCAPE bit offset on PTPTIMESCALE byte*/
 
-#define TX_TIMEOUT_BASE 1000 	/*!< Timeout base in microseconds */
-#define TX_TIMEOUT_ITER 6		/*!< Number of timeout iteractions for sending/receiving messages*/
-
 /**
  * @brief Enumeration message type. IEEE 1588-2008 Clause 13.3.2.2
  */
@@ -153,16 +151,6 @@ enum LegacyMessageType {
 	DELAY_RESP,
 	MANAGEMENT,
 	MESSAGE_OTHER
-};
-
-/**
- * @brief Enumeration multicast type.
- */
-enum MulticastType {
-	MCAST_NONE,
-	MCAST_PDELAY,
-	MCAST_TEST_STATUS,
-	MCAST_OTHER
 };
 
 /**
@@ -199,7 +187,7 @@ protected:
 	 * @brief Creates the PTPMessageCommon interface
 	 * @param port IEEE1588Port where the message interface is connected to.
 	 */
-	PTPMessageCommon(IEEE1588Port * port);
+	PTPMessageCommon( MediaDependentPort *port );
 	/**
 	 * @brief Destroys PTPMessageCommon interface
 	 */
@@ -312,9 +300,9 @@ protected:
 	/**
 	 * @brief  Generic interface for processing PTP message
 	 * @param  port IEEE1588 port
-	 * @return void
+	 * @return true on success
 	 */
-	virtual void processMessage(IEEE1588Port * port);
+	virtual bool processMessage( MediaDependentPort *port );
 
 	/**
 	 * @brief  Builds PTP common header
@@ -323,8 +311,9 @@ protected:
 	 */
 	void buildCommonHeader(uint8_t * buf);
 
-	friend PTPMessageCommon *buildPTPMessage
-	(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 /*Exact fit. No padding*/
@@ -460,7 +449,7 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 /**
 	  * @brief Creates the PTPMessageAnnounce interface
 	  */
-	 PTPMessageAnnounce(IEEE1588Port * port);
+	 PTPMessageAnnounce( MediaIndependentPort *port);
 
 	 /**
 	  * @brief Destroys the PTPMessageAnnounce interface
@@ -529,9 +518,9 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	/**
 	 * @brief  Processes PTP message
 	 * @param  port IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentPort *port );
 
 	/**
 	 * @brief  Assembles PTPMessageAnnounce message on the IEEE1588Port payload
@@ -539,17 +528,31 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentPort *port );
 
-	friend PTPMessageCommon *buildPTPMessage(char *buf, int size,
-						 LinkLayerAddress * remote,
-						 IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
+};
+
+/**
+ * @brief Provides a class for PTP Ethernet messages
+ */
+class PTPMessageEther : public PTPMessageCommon {
+public:
+        PTPMessageEther() {}
+        virtual ~PTPMessageEther() {}
+        PTPMessageEther( MediaDependentPort *port ) :
+                PTPMessageCommon( port ) { }
+        virtual bool processMessage( MediaDependentEtherPort *port ) = 0;
+        bool processMessage( MediaDependentPort *port_in );
+        net_result sendPort( MediaDependentPort *port_in );
 };
 
 /**
  * @brief Provides a class for building the PTP Sync message
  */
-class PTPMessageSync : public PTPMessageCommon {
+class PTPMessageSync : public PTPMessageEther {
  private:
 	Timestamp originTimestamp;
 
@@ -559,7 +562,7 @@ class PTPMessageSync : public PTPMessageCommon {
 	 * @brief Default constructor. Creates PTPMessageSync
 	 * @param port IEEE1588Port
 	 */
-	PTPMessageSync(IEEE1588Port * port);
+	PTPMessageSync( MediaDependentPort *port );
 
 	/**
 	 * @brief Destroys PTPMessageSync interface
@@ -569,9 +572,9 @@ class PTPMessageSync : public PTPMessageCommon {
 	/**
 	 * @brief  Processes PTP messages
 	 * @param  port [in] IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentEtherPort *port );
 
 	/**
 	 * @brief  Gets origin timestamp value
@@ -587,10 +590,11 @@ class PTPMessageSync : public PTPMessageCommon {
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentEtherPort *port );
 
-	friend PTPMessageCommon *buildPTPMessage
-	(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 /* Exact fit. No padding*/
@@ -785,7 +789,7 @@ class FollowUpTLV {
 /**
  * @brief Provides a class for a class for building a PTP follow up message
  */
-class PTPMessageFollowUp:public PTPMessageCommon {
+class PTPMessageFollowUp : public PTPMessageEther {
 private:
 	Timestamp preciseOriginTimestamp;
 
@@ -796,7 +800,7 @@ public:
 	/**
 	 * @brief Builds the PTPMessageFollowUP object
 	 */
-	PTPMessageFollowUp(IEEE1588Port * port);
+	PTPMessageFollowUp( MediaDependentPort *port );
 
 	/**
 	 * @brief  Assembles PTPMessageFollowUp message on the IEEE1588Port payload
@@ -804,14 +808,15 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentEtherPort *port );
 
 	/**
 	 * @brief  Processes PTP messages
 	 * @param  port [in] IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentEtherPort *port );
+
 	/**
 	 * @brief  Gets the precise origin timestamp value
 	 * @return preciseOriginTimestamp value
@@ -841,8 +846,9 @@ public:
 		tlv.setScaledLastGmPhaseChange(fup->getScaledLastGmPhaseChange());
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
-	(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 /**
@@ -865,7 +871,7 @@ class PTPMessagePathDelayReq : public PTPMessageCommon {
 	/**
 	 * @brief Builds the PTPMessagePathDelayReq message
 	 */
-	PTPMessagePathDelayReq(IEEE1588Port * port);
+	PTPMessagePathDelayReq( MediaDependentEtherPort *port );
 
 	/**
 	 * @brief  Assembles PTPMessagePathDelayReq message on the IEEE1588Port payload
@@ -873,14 +879,14 @@ class PTPMessagePathDelayReq : public PTPMessageCommon {
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentPort *port );
 
 	/**
 	 * @brief  Processes PTP messages
 	 * @param  port [in] IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentPort *port );
 
 	/**
 	 * @brief  Gets origin timestamp value
@@ -890,8 +896,9 @@ class PTPMessagePathDelayReq : public PTPMessageCommon {
 		return originTimestamp;
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
-	(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 /**
@@ -912,7 +919,7 @@ public:
 	/**
 	 * @brief Builds the PTPMessagePathDelayResp object
 	 */
-	PTPMessagePathDelayResp(IEEE1588Port * port);
+	PTPMessagePathDelayResp( MediaDependentEtherPort *port );
 
 	/**
 	 * @brief  Assembles PTPMessagePathDelayResp message on the IEEE1588Port payload
@@ -920,14 +927,14 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentPort *port );
 
 	/**
 	 * @brief  Processes PTP messages
 	 * @param  port [in] IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentPort *port );
 
 	/**
 	 * @brief  Sets the request receipt timestamp
@@ -959,8 +966,9 @@ public:
 		return requestReceiptTimestamp;
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
-	(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 /**
@@ -977,7 +985,7 @@ public:
 	/**
 	 * @brief Builds the PTPMessagePathDelayRespFollowUp object
 	 */
-	PTPMessagePathDelayRespFollowUp(IEEE1588Port * port);
+	PTPMessagePathDelayRespFollowUp( MediaDependentEtherPort * port);
 
 	/**
 	 * @brief Destroys the PTPMessagePathDelayRespFollowUp object
@@ -990,14 +998,14 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentPort *port );
 
 	/**
 	 * @brief  Processes PTP messages
 	 * @param  port [in] IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentPort *port );
 
 	/**
 	 * @brief  Sets the response origin timestamp
@@ -1029,8 +1037,9 @@ public:
 		return requestingPortIdentity;
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
-	(char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 /*Exact fit. No padding*/
@@ -1153,7 +1162,7 @@ public:
 	/**
 	 * @brief Builds the PTPMessageSignalling object
 	 */
-	PTPMessageSignalling(IEEE1588Port * port);
+	PTPMessageSignalling( MediaIndependentPort *port );
 
 	/**
 	 * @brief Destroys the PTPMessageSignalling object
@@ -1176,17 +1185,18 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort(IEEE1588Port * port, PortIdentity * destIdentity);
+	void sendPort( MediaDependentPort *port );
 
 	/**
 	 * @brief  Processes PTP messages
 	 * @param  port [in] IEEE1588Port
-	 * @return void
+	 * @return true on success
 	 */
-	void processMessage(IEEE1588Port * port);
+	bool processMessage( MediaDependentPort *port );
 
-	friend PTPMessageCommon *buildPTPMessage
-	  (char *buf, int size, LinkLayerAddress * remote, IEEE1588Port * port);
+	friend PTPMessageCommon *
+	buildPTPMessage( char *buf, int size, LinkLayerAddress * remote,
+			 MediaDependentPort *port, bool *event );
 };
 
 #endif

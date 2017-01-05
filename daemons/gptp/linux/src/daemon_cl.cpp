@@ -80,7 +80,7 @@ void print_usage( char *arg0 ) {
 		  "\t-M <filename> save/restore state\n"
 		  "\t-G <group> group id for shared memory\n"
 		  "\t-R <priority 1> priority 1 value\n"
-		  "\t-D Phy Delay <gb_tx_delay,gb_rx_delay,mb_tx_delay,mb_rx_delay>\n"
+		  "\t-D Phy Delay <mb_tx_delay,mb_rx_delay,gb_tx_delay,gb_rx_delay>\n"
 		  "\t-T force master (ignored when Automotive Profile set)\n"
 		  "\t-L force slave (ignored when Automotive Profile set)\n"
 		  "\t-E enable test mode (as defined in AVnu automotive profile)\n"
@@ -138,7 +138,6 @@ int main(int argc, char **argv)
 	GPTP_LOG_REGISTER();
 	GPTP_LOG_INFO("gPTP starting");
 
-	int phy_delay[4]={0,0,0,0};
 	bool input_delay=false;
 
 	portInit.clock = NULL;
@@ -248,7 +247,9 @@ int main(int argc, char **argv)
 						GPTP_LOG_UNREGISTER();
 						return 0;
 					}
-					phy_delay[delay_count]=atoi(cli_inp_delay);
+					((int *)(&portInit.phy_delay))
+						[delay_count]
+						= atoi(cli_inp_delay);
 					delay_count++;
 					cli_inp_delay = strtok(NULL,",");
 				}
@@ -389,10 +390,14 @@ int main(int argc, char **argv)
 			/*Only overwrites phy_delay default values if not input_delay switch enabled*/
 			if(!input_delay)
 			{
-				phy_delay[0] = iniParser.getPhyDelayGbTx();
-				phy_delay[1] = iniParser.getPhyDelayGbRx();
-				phy_delay[2] = iniParser.getPhyDelayMbTx();
-				phy_delay[3] = iniParser.getPhyDelayMbRx();
+				portInit->phy_delay.gb_tx_phy_delay
+					= iniParser.getPhyDelayGbTx();
+				portInit->phy_delay.gb_rx_phy_delay
+					= iniParser.getPhyDelayGbTx();
+				portInit->phy_delay.mb_tx_phy_delay
+					= iniParser.getPhyDelayMbTx();
+				portInit->phy_delay.mb_rx_phy_delay
+					= iniParser.getPhyDelayMbTx();
 			}
 		}
 

@@ -36,9 +36,13 @@
 
 #include <stdint.h>
 #include <ieee1588.hpp>
-#include <avbts_port.hpp>
 #include <avbts_ostimerq.hpp>
 #include <avbts_osipc.hpp>
+#include <avbts_oslock.hpp>
+#include <memory>
+
+class FollowUpTLV;
+class PortIdentity;
 
 /**@file*/
 
@@ -61,6 +65,11 @@
    adjustment is performed */
 #define PHASE_ERROR_MAX_COUNT (6)
 
+struct ClockPortList;
+struct ClockPortIter;
+
+typedef std::unique_ptr<struct ClockPortList> ClockPortList_t;
+typedef std::unique_ptr<struct ClockPortIter> ClockPortIter_t;
 
 /**
  * @brief Provides the clock quality abstraction.
@@ -83,6 +92,16 @@ struct ClockQuality {
 										  master. The PTP variance is the square of
 										  PTPDEV (See B.1.3.2). */
 };
+
+typedef struct
+{
+	Timestamp origin;
+	Timestamp dev_receipt;
+	Timestamp sys_receipt;
+	int64_t correction;
+	FrequencyRatio cumul_freq_offset;
+	uint8_t ingress_devid;
+} sync_info_t;
 
 /**
  * @brief Provides the 1588 clock interface
@@ -107,7 +126,6 @@ private:
 	uint16_t steps_removed;
 	int64_t offset_from_master;
 	Timestamp one_way_delay;
-	PortIdentity parent_identity;
 	ClockIdentity grandmaster_clock_identity;
 	ClockQuality grandmaster_clock_quality;
 	unsigned char grandmaster_priority1;
@@ -116,12 +134,15 @@ private:
 	uint8_t time_source;
 
 	ClockIdentity LastEBestIdentity;
+	sync_info_t sync_info;
+	bool sync_info_valid;
+
 	bool _syntonize;
 	bool _new_syntonization_set_point;
 	float _ppm;
 	int _phase_error_violation;
 
-	IEEE1588Port *port_list[MAX_PORTS];
+	ClockPortList_t port_list;
 
 	static Timestamp start_time;
 	Timestamp last_sync_time;
@@ -143,6 +164,9 @@ private:
 	bool forceOrdinarySlave;
 	FrequencyRatio _master_local_freq_offset;
 	FrequencyRatio _local_system_freq_offset;
+	
+	/* Automotive Profile : Static variable */
+	tristate_t _isGM;
 
     /**
      * @brief fup info stores information of the last time
@@ -160,6 +184,7 @@ private:
     FollowUpTLV *fup_status;
 
     OSLock *timerq_lock;
+    OSLock *glock;
 
 	/**
 	 * @brief  Add a new event to the timer queue
@@ -168,7 +193,7 @@ private:
 	 * @param  time_ns Time in nanoseconds
 	 */
 	void addEventTimer
-		( IEEE1588Port * target, Event e, unsigned long long time_ns );
+	( MediaIndependentPort *target, Event e, unsigned long long time_ns );
 
 	/**
 	 * @brief  Deletes an event from the timer queue
@@ -176,8 +201,10 @@ private:
 	 * @param  e Event to be removed
 	 * @return void
 	 */
-	void deleteEventTimer(IEEE1588Port * target, Event e);
+	void deleteEventTimer( MediaIndependentPort * target, Event e );
+
 public:
+
   /**
    * @brief Instantiates a IEEE 1588 Clock
    * @param forceOrdinarySlave Forces it to be an ordinary slave
@@ -250,6 +277,25 @@ public:
 	  LastEBestIdentity = id;
 	  return;
   }
+
+	void setLastSyncInfo( sync_info_t *info )
+	{
+		sync_info = *info;
+		sync_info_valid = true;
+	}
+
+	bool getLastSyncInfo( sync_info_t *info )
+	{
+		if( sync_info_valid )
+		{
+			if( info != NULL )
+				*info = sync_info;
+			return true;
+		}
+
+		return false;
+	}
+
 
   /**
    * @brief  Sets clock identity by id
@@ -454,37 +500,42 @@ public:
    * base changes (IEEE 802.1AS clause 9.2)
    * @return void
    */
-  void updateFUPInfo(void)
-  {
-      fup_info->incrementGMTimeBaseIndicator();
-      fup_info->setScaledLastGmFreqChange(fup_status->getScaledLastGmFreqChange());
-      fup_info->setScaledLastGmPhaseChange(fup_status->getScaledLastGmPhaseChange());
-  }
+	void updateFUPInfo(void);
 
-  /**
-   * @brief  Registers a new IEEE1588 port
-   * @param  port  [in] IEEE1588port instance
-   * @param  index Port's index
-   * @return void
-   */
-  void registerPort(IEEE1588Port * port, uint16_t index) {
-	  if (index < MAX_PORTS) {
-		  port_list[index - 1] = port;
-	  }
-	  ++number_ports;
-  }
+	/**
+	 * @brief  Returns GM configuration
+	 * @return GM configuration
+	 */
+	bool isGM()
+	{
+		if( _isGM == undefined )
+			return false;
+		return (bool) _isGM;
+	}
 
-  /**
-   * @brief  Gets the current port list instance
-   * @param  count [out] Number of ports
-   * @param  ports [out] Pointer to the port list
-   * @return
-   */
-  void getPortList(int &count, IEEE1588Port ** &ports) {
-	  ports = this->port_list;
-	  count = number_ports;
-	  return;
-  }
+	/**
+	 * @brief  Set GM configuration
+	 */
+	void setGM()
+	{
+		_isGM = (tristate_t) true;
+	}
+
+	/**
+	 * @brief  Clear GM configuration
+	 */
+	void clearGM()
+	{
+		_isGM = (tristate_t) false;
+	}
+
+	/**
+	 * @brief  Registers a new IEEE1588 port
+	 * @param  port  [in] IEEE1588port instance
+	 * @param  index Port's index
+	 * @return void
+	 */
+	void registerPort( MediaIndependentPort * port, uint16_t index );
 
   /**
    * @brief  Gets current system time
@@ -499,8 +550,8 @@ public:
    * @param  time_ns event time in nanoseconds
    * @return void
    */
-  void addEventTimerLocked
-	  ( IEEE1588Port * target, Event e, unsigned long long time_ns );
+	void addEventTimerLocked
+	( MediaDependentPort * target, Event e, unsigned long long time_ns );
 
   /**
    * @brief  Deletes and event from the timer queue using a lock
@@ -508,7 +559,8 @@ public:
    * @param  e Event to be deleted
    * @return
    */
-  void deleteEventTimerLocked(IEEE1588Port * target, Event e);
+	void deleteEventTimerLocked
+	( MediaDependentPort * target, Event e );
 
   /**
    * @brief  Calculates the master to local clock rate difference
@@ -541,16 +593,13 @@ public:
    * @param  port_state PortState instance
    * @param  asCapable asCapable flag
    */
-  void setMasterOffset
-	  ( IEEE1588Port * port, int64_t master_local_offset, Timestamp local_time,
-		FrequencyRatio master_local_freq_offset,
-		int64_t local_system_offset,
-		Timestamp system_time,
-		FrequencyRatio local_system_freq_offset,
-		unsigned sync_count,
-        unsigned pdelay_count,
-        PortState port_state,
-        bool asCapable );
+	void setMasterOffset
+	( MediaIndependentPort * port, int64_t master_local_offset,
+	  Timestamp local_time, FrequencyRatio master_local_freq_offset,
+	  int64_t local_system_offset,
+	  Timestamp system_time, FrequencyRatio local_system_freq_offset,
+	  unsigned sync_count, unsigned pdelay_count, PortState port_state,
+	  bool asCapable );
 
   /**
    * @brief  Get the IEEE1588Clock identity value
@@ -572,58 +621,19 @@ public:
    * @brief  Restart PDelays on all ports
    * @return void
    */
-  void restartPDelayAll() {
-	  int number_ports, i, j = 0;
-	  IEEE1588Port **ports;
-
-	  getPortList( number_ports, ports );
-
-	  for( i = 0; i < number_ports; ++i ) {
-		  while( ports[j] == NULL ) ++j;
-		  ports[j]->restartPDelay();
-	  }
-  }
+	void restartPDelayAll();
 
   /**
    * @brief  Gets all TX locks
    * @return void
    */
-  int getTxLockAll() {
-	  int number_ports, i, j = 0;
-	  IEEE1588Port **ports;
-
-	  getPortList( number_ports, ports );
-
-	  for( i = 0; i < number_ports; ++i ) {
-		  while( ports[j] == NULL ) ++j;
-		  if( ports[j]->getTxLock() == false ) {
-			  return false;
-		  }
-	  }
-
-	  return true;
-  }
+	int getTxLockAll();
 
   /**
    * @brief  Release all TX locks
    * @return void
    */
-  int putTxLockAll() {
-	  int number_ports, i, j = 0;
-	  IEEE1588Port **ports;
-
-	  getPortList( number_ports, ports );
-
-	  for( i = 0; i < number_ports; ++i ) {
-		  while( ports[j] == NULL ) ++j;
-		  if( ports[j]->putTxLock() == false ) {
-			  return false;
-		  }
-	  }
-
-	  return true;
-  }
-
+	int putTxLockAll();
 
   /**
    * @brief  Declares a friend instance of tick_handler method
@@ -631,6 +641,22 @@ public:
    * @return void
    */
   friend void tick_handler(int sig);
+
+	/**
+	 * @brief get global lock on clock state
+	 */
+	OSLockResult lock()
+	{
+		return glock->lock();
+	}
+
+	/**
+	 * @brief put global lock on clock state
+	 */
+	OSLockResult unlock()
+	{
+		return glock->unlock();
+	}
 
   /**
    * @brief  Gets the timer queue lock

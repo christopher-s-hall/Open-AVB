@@ -26,7 +26,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ieee1588.hpp>
 #include <avbts_clock.hpp>
 #include <avbap_message.hpp>
-#include <avbts_port.hpp>
 #include <avbts_ostimer.hpp>
 #include <gptp_log.hpp>
 

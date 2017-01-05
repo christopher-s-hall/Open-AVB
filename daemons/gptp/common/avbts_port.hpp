@@ -207,63 +207,6 @@ public:
 typedef std::map < PortIdentity, LinkLayerAddress > IdentityMap_t;
 
 /**
- * @brief Structure for initializing the IEEE1588 class
- */
-typedef struct {
-	/* clock IEEE1588Clock instance */
-	IEEE1588Clock * clock;
-
-	/* index Interface index */
-	uint16_t index;
-
-	/* forceSlave Forces port to be slave  */
-	bool forceSlave;
-
-	/* timestamper Hardware timestamper instance */
-	HWTimestamper * timestamper;
-
-	/* offset  Initial clock offset */
-	int32_t offset;
-
-	/* net_label Network label */
-	InterfaceLabel * net_label;
-
-	/* automotive_profile set the AVnu automotive profile */
-	bool automotive_profile;
-
-	/* Set to true if the port is the grandmaster. Used for fixed GM in the the AVnu automotive profile */
-	bool isGM;
-
-	/* Set to true if the port is the grandmaster. Used for fixed GM in the the AVnu automotive profile */
-	bool testMode;
-
-	/* gPTP 10.2.4.4 */
-	char initialLogSyncInterval;
-
-	/* gPTP 11.5.2.2 */
-	char initialLogPdelayReqInterval;
-
-	/* CDS 6.2.1.5 */
-	char operLogPdelayReqInterval;
-
-	/* CDS 6.2.1.6 */
-	char operLogSyncInterval;
-
-	/* condition_factory OSConditionFactory instance */
-	OSConditionFactory * condition_factory;
-
-	/* thread_factory OSThreadFactory instance */
-	OSThreadFactory * thread_factory;
-
-	/* timer_factory OSTimerFactory instance */
-	OSTimerFactory * timer_factory;
-
-	/* lock_factory OSLockFactory instance */
-	OSLockFactory * lock_factory;
-} IEEE1588PortInit_t;
-
-
-/**
  * @brief Structure for IEE1588Port Counters
  */
 typedef struct {
@@ -343,7 +286,6 @@ class IEEE1588Port {
 
 	/* Automotive Profile : Static variables */
 	// port_state : already defined as port_state
-	bool isGM;
 	bool testMode;
 	// asCapable : already defined as asCapable
 	char initialLogPdelayReqInterval;
@@ -435,8 +377,6 @@ class IEEE1588Port {
 	IEEE1588PortCounters_t counters;
 
  public:
-	bool forceSlave;	//!< Forces port to be slave. Added for testing.
-
 	/**
 	 * @brief  Serializes (i.e. copy over buf pointer) the information from
 	 * the variables (in that order):
@@ -615,7 +555,6 @@ class IEEE1588Port {
 	 *         Automotive profile.
 	 * @param  clock IEEE1588Clock instance
 	 * @param  index Interface index
-	 * @param  forceSlave Forces port to be slave
 	 * @param  timestamper Hardware timestamper instance
 	 * @param  offset  Initial clock offset
 	 * @param  net_label Network label
@@ -626,7 +565,6 @@ class IEEE1588Port {
 	 */
 	IEEE1588Port
 	(IEEE1588Clock * clock, uint16_t index,
-	 bool forceSlave,
 	 HWTimestamper * timestamper,
 	 int32_t offset, InterfaceLabel * net_label,
 	 OSConditionFactory * condition_factory,
@@ -1516,152 +1454,6 @@ class IEEE1588Port {
 	 */
 	bool getTestMode(void) {
 		return testMode;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxSyncCount
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxSyncCount(void) {
-		counters.ieee8021AsPortStatRxSyncCount++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxFollowUpCount
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxFollowUpCount(void) {
-		counters.ieee8021AsPortStatRxFollowUpCount++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxPdelayRequest
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxPdelayRequest(void) {
-		counters.ieee8021AsPortStatRxPdelayRequest++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxPdelayResponse
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxPdelayResponse(void) {
-		counters.ieee8021AsPortStatRxPdelayResponse++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxPdelayResponseFollowUp
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxPdelayResponseFollowUp(void) {
-		counters.ieee8021AsPortStatRxPdelayResponseFollowUp++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxAnnounce
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxAnnounce(void) {
-		counters.ieee8021AsPortStatRxAnnounce++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxPTPPacketDiscard
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxPTPPacketDiscard(void) {
-		counters.ieee8021AsPortStatRxPTPPacketDiscard++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatRxSyncReceiptTimeouts
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatRxSyncReceiptTimeouts(void) {
-		counters.ieee8021AsPortStatRxSyncReceiptTimeouts++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatAnnounceReceiptTimeouts
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatAnnounceReceiptTimeouts(void) {
-		counters.ieee8021AsPortStatAnnounceReceiptTimeouts++;
-	}
-
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatPdelayAllowedLostResponsesExceeded
-	 * @return void
-	 */
-	// TODO: Not called
-	void incCounter_ieee8021AsPortStatPdelayAllowedLostResponsesExceeded(void) {
-		counters.ieee8021AsPortStatPdelayAllowedLostResponsesExceeded++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatTxSyncCount
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatTxSyncCount(void) {
-		counters.ieee8021AsPortStatTxSyncCount++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatTxFollowUpCount
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatTxFollowUpCount(void) {
-		counters.ieee8021AsPortStatTxFollowUpCount++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatTxPdelayRequest
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatTxPdelayRequest(void) {
-		counters.ieee8021AsPortStatTxPdelayRequest++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatTxPdelayResponse
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatTxPdelayResponse(void) {
-		counters.ieee8021AsPortStatTxPdelayResponse++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatTxPdelayResponseFollowUp
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatTxPdelayResponseFollowUp(void) {
-		counters.ieee8021AsPortStatTxPdelayResponseFollowUp++;
-	}
-
-	/**
-	 * @brief  Increment IEEE Port counter:
-	 *         ieee8021AsPortStatTxAnnounce
-	 * @return void
-	 */
-	void incCounter_ieee8021AsPortStatTxAnnounce(void) {
-		counters.ieee8021AsPortStatTxAnnounce++;
 	}
 
 	/**

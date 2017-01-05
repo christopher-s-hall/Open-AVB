@@ -88,13 +88,10 @@ IEEE1588Port::IEEE1588Port(IEEE1588PortInit_t *portInit)
 
 	clock = portInit->clock;
 	ifindex = portInit->index;
-	clock->registerPort(this, ifindex);
 
-	forceSlave = portInit->forceSlave;
 	port_state = PTP_INITIALIZING;
 
 	automotive_profile = portInit->automotive_profile;
-	isGM = portInit->isGM;
 	testMode = portInit->testMode;
 	initialLogSyncInterval = portInit->initialLogSyncInterval;
 	initialLogPdelayReqInterval = portInit->initialLogPdelayReqInterval;
@@ -214,8 +211,15 @@ void IEEE1588Port::timestamper_reset(void)
 	}
 }
 
-bool IEEE1588Port::init_port(int delay[4])
+bool IEEE1588Port::init_port(IEEE1588PortInit_t *portInit)
 {
+	if( !clock->registerPort(this, ifindex, portInit))
+	{
+		GPTP_LOG_ERROR( "Unable to register port, index=%d\n",
+				ifindex );
+		return false;
+	}
+
 	if (!OSNetworkInterfaceFactory::buildInterface
 	    (&net_iface, factory_name_t("default"), net_label, _hw_timestamper))
 		return false;

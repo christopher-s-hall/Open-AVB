@@ -62,4 +62,9 @@ typedef enum {
 	PTP_LISTENING		//!< Port is in a PTP listening state. Currently not in use.
 } PortState;
 
+/**
+ * @brief tristate enum
+ */
+typedef enum { tritrue = true, trifalse = false, undefined } tristate_t;
+
 #endif/*PTP_TYPES_HPP*/
