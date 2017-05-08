@@ -277,6 +277,22 @@ protected:
 	}
 
 	/**
+	 * @brief Check if message type is event
+	 * @return true if an event message
+	 */
+	bool isEvent( void )
+	{
+		return (( messageType >> 3) & 0x1 ) == 1;
+	}
+
+	/**
+	 * @brief Get TX timestamp
+	 * @param port used to send message
+	 * @param link_speed link speed of message
+	 */
+	bool getTxTimestamp( EtherPort *port, uint32_t link_speed );
+
+	/**
 	 * @brief  Gets the MessageID of the PTP message.
 	 * @return MessageId
 	 */
@@ -588,7 +604,7 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	( CommonPort *port, PortIdentity *destIdentity);
 
 	friend PTPMessageCommon *buildPTPMessage
@@ -639,7 +655,7 @@ class PTPMessageSync : public PTPMessageCommon {
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	(EtherPort *port, PortIdentity *destIdentity );
 
 	friend PTPMessageCommon *buildPTPMessage
@@ -860,7 +876,7 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	( EtherPort *port, PortIdentity *destIdentity );
 
 	/**
@@ -934,7 +950,7 @@ class PTPMessagePathDelayReq : public PTPMessageCommon {
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	( EtherPort *port, PortIdentity *destIdentity );
 
 	/**
@@ -985,7 +1001,7 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	( EtherPort *port, PortIdentity *destIdentity );
 
 	/**
@@ -1059,7 +1075,7 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	( EtherPort *port, PortIdentity *destIdentity );
 
 	/**
@@ -1248,7 +1264,7 @@ public:
 	 * @param  destIdentity [in] Destination PortIdentity
 	 * @return void
 	 */
-	void sendPort
+	bool sendPort
 	( EtherPort *port, PortIdentity *destIdentity );
 
 	/**

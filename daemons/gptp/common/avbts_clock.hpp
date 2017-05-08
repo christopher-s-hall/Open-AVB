@@ -134,8 +134,6 @@ private:
 	Timestamp _prev_local_time;
 	Timestamp _prev_system_time;
 
-	HWTimestamper *_timestamper;
-
 	OS_IPC *ipc;
 
 	OSTimerQueue *timerq;
@@ -191,8 +189,8 @@ public:
    */
   IEEE1588Clock
 	  (bool forceOrdinarySlave, bool syntonize, uint8_t priority1,
-	   HWTimestamper *timestamper, OSTimerQueueFactory * timerq_factory,
-	   OS_IPC * ipc, OSLockFactory *lock_factory );
+	   OSTimerQueueFactory * timerq_factory, OS_IPC * ipc,
+	   OSLockFactory *lock_factory );
 
   /*
    * Destroys the IEEE 1588 clock entity

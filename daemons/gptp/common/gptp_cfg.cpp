@@ -149,47 +149,29 @@ int GptpIniParser::iniCallBack(void *user, const char *section, const char *name
     }
     else if( parseMatch(section, "eth") )
     {
-        if( parseMatch(name, "phy_delay_gb_tx") )
+        if( parseMatch(name, "phy_delay_gb_tx_rx") )
         {
             errno = 0;
             char *pEnd;
-            int phdly = strtoul(value, &pEnd, 10);
+            int ph_tx_dly = strtoul(value, &pEnd, 10);
+            int ph_rx_dly = strtoul(pEnd, &pEnd, 10);
             if( *pEnd == '\0' && errno == 0) {
                 valOK = true;
-                parser->_config.phyDelay.gb_tx_phy_delay = phdly;
+                parser->_config.phy_delay[LINKSPEED_1G].set
+			( ph_tx_dly, ph_rx_dly );
             }
         }
 
-        else if( parseMatch(name, "phy_delay_gb_rx") )
+        else if( parseMatch(name, "phy_delay_mb_tx_rx") )
         {
             errno = 0;
             char *pEnd;
-            int phdly = strtoul(value, &pEnd, 10);
+            int ph_tx_dly = strtoul(value, &pEnd, 10);
+            int ph_rx_dly = strtoul(pEnd, &pEnd, 10);
             if( *pEnd == '\0' && errno == 0) {
                 valOK = true;
-                parser->_config.phyDelay.gb_rx_phy_delay = phdly;
-            }
-        }
-
-        else if( parseMatch(name, "phy_delay_mb_tx") )
-        {
-            errno = 0;
-            char *pEnd;
-            int phdly = strtoul(value, &pEnd, 10);
-            if( *pEnd == '\0' && errno == 0) {
-                valOK = true;
-                parser->_config.phyDelay.mb_tx_phy_delay = phdly;
-            }
-        }
-
-        else if( parseMatch(name, "phy_delay_mb_rx") )
-        {
-            errno = 0;
-            char *pEnd;
-            int phdly = strtoul(value, &pEnd, 10);
-            if( *pEnd == '\0' && errno == 0) {
-                valOK = true;
-                parser->_config.phyDelay.mb_rx_phy_delay = phdly;
+                parser->_config.phy_delay[LINKSPEED_100MB].set
+			( ph_tx_dly, ph_rx_dly );
             }
         }
     }
