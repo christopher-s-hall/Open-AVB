@@ -327,8 +327,8 @@ int LinuxTimestamperGeneric::HWTimestamper_txtimestamp
 			ts_system = ((struct timespec *) CMSG_DATA(cmsg)) + 1;
 			system = tsToTimestamp( ts_system );
 			ts_device = ts_system + 1; device = tsToTimestamp( ts_device );
-			system._version = version;
-			device._version = version;
+			system.setVersion( version );
+			device.setVersion( version );
 			timestamp = device;
 			ret = 0;
 			break;
@@ -417,11 +417,7 @@ static inline int64_t pctns(struct ptp_clock_time t)
 }
 
 static inline Timestamp pctTimestamp( struct ptp_clock_time *t ) {
-	Timestamp result;
-
-	result.seconds_ls = t->sec & 0xFFFFFFFF;
-	result.seconds_ms = t->sec >> sizeof(result.seconds_ls)*8;
-	result.nanoseconds = t->nsec;
+	Timestamp result( t->nsec, t->sec & 0xFFFFFFFF, t->sec >> 32 );
 
 	return result;
 }

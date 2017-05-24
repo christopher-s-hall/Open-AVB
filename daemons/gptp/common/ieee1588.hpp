@@ -62,19 +62,6 @@
 
 
 class LinkLayerAddress;
-struct ClockQuality;
-class PortIdentity;
-class PTPMessageId;
-class PTPMessageCommon;
-class PTPMessageSync;
-class PTPMessageAnnounce;
-class PTPMessagePathDelayReq;
-class PTPMessagePathDelayResp;
-class PTPMessagePathDelayRespFollowUp;
-class EtherPort;
-class CommonPort;
-class IEEE1588Clock;
-class OSNetworkInterface;
 
 /**
  * @enum Event
@@ -102,14 +89,6 @@ typedef enum {
 } Event;
 
 /**
- * @brief Defines an event descriptor type
- */
-typedef struct {
-	CommonPort *port;	//!< Media Dependent Ether Port
-	Event event;	//!< Event enumeration
-} event_descriptor_t;
-
-/**
  * @brief Provides a generic InterfaceLabel class
  */
 class InterfaceLabel {
@@ -117,6 +96,9 @@ class InterfaceLabel {
 	virtual ~ InterfaceLabel() {
 	};
 };
+
+/*Exact fit. No padding*/
+#pragma pack(push,1)
 
 /**
  * @brief Provides a ClockIdentity abstraction
@@ -227,13 +209,60 @@ class ClockIdentity {
 };
 
 #define INVALID_TIMESTAMP_VERSION 0xFF		/*!< Value defining invalid timestamp version*/
-#define MAX_NANOSECONDS 1000000000			/*!< Maximum value of nanoseconds (1 second)*/
+#define NSEC_PER_SEC 1000000000
+/*!< nanoseconds per second */
+#define MAX_NANOSECONDS NSEC_PER_SEC
+/*!< Maximum value of nanoseconds (1 second)*/
 #define MAX_TSTAMP_STRLEN 25				/*!< Maximum size of timestamp strlen*/
+
+class Timestamp;
+
+/**
+ * @brief Simple timestamp class used to directly accessing network buffer
+ */
+class  _Timestamp
+{
+public:
+	uint16_t seconds_ms;	//!< 32 bit seconds MSB value
+	uint32_t seconds_ls;	//!< 32 bit seconds LSB value
+	uint32_t nanoseconds;	//!< 32 bit nanoseconds value
+
+	/**
+	 * @brief Assign Timestamp to _Timestamp
+	 */
+	_Timestamp& operator=( const Timestamp &ts );
+
+	/**
+	 * @brief Change from network to host order
+	 */
+	void ntoh( void )
+	{
+		nanoseconds = PLAT_ntohl( nanoseconds );
+		seconds_ls = PLAT_ntohl( seconds_ls );
+		seconds_ms = PLAT_ntohs( seconds_ms );
+	}
+
+	/**
+	 * @brief Change from host order to network order
+	 */
+	void hton( void )
+	{
+		nanoseconds = PLAT_htonl( nanoseconds );
+		seconds_ls = PLAT_htonl( seconds_ls );
+		seconds_ms = PLAT_htons( seconds_ms );
+	}
+};
+
+/* back to whatever the previous packing mode was */
+#pragma pack(pop)
 
 /**
  * @brief Provides a Timestamp interface
  */
 class Timestamp {
+private:
+	_Timestamp timestamp;
+	uint8_t _version;	//!< 8 bit version value
 public:
 	/**
 	 * @brief  Creates a Timestamp instance
@@ -245,9 +274,9 @@ public:
 	Timestamp
 	(uint32_t ns, uint32_t s_l, uint16_t s_m,
 	 uint8_t ver = INVALID_TIMESTAMP_VERSION) {
-		nanoseconds = ns;
-		seconds_ls = s_l;
-		seconds_ms = s_m;
+		timestamp.nanoseconds = ns;
+		timestamp.seconds_ls = s_l;
+		timestamp.seconds_ms = s_m;
 		_version = ver;
 	}
 	/*
@@ -257,14 +286,10 @@ public:
 	Timestamp() {
 		Timestamp( 0, 0, 0 );
 	}
-	uint32_t nanoseconds;	//!< 32 bit nanoseconds value
-	uint32_t seconds_ls;	//!< 32 bit seconds LSB value
-	uint16_t seconds_ms;	//!< 32 bit seconds MSB value
-	uint8_t _version;		//!< 8 bit version value
 
 	/**
 	 * @brief Copies the timestamp to the internal string in the following format:
-	 * seconds_ms seconds_ls nanoseconds
+	 * seconds_ms timestamp.seconds_ls timestamp.nanoseconds
 	 * @return STL string containing timestamp
 	 */
 	std::string toString() const
@@ -273,9 +298,17 @@ public:
 
 		PLAT_snprintf
 			( output_string, MAX_TSTAMP_STRLEN+1, "%hu %u.%09u",
-			  seconds_ms, seconds_ls, nanoseconds );
+			  timestamp.seconds_ms, timestamp.seconds_ls,
+			  timestamp.nanoseconds );
 
 		return std::string( output_string );
+	}
+
+	Timestamp& operator=( const _Timestamp &ts )
+	{
+		timestamp = ts;
+
+		return *this;
 	}
 
 	/**
@@ -283,33 +316,38 @@ public:
 	 * @param o Constant reference to the timestamp to be added
 	 * @return Object's timestamp + o.
 	 */
-	Timestamp operator+( const Timestamp& o ) {
+	Timestamp operator+( const Timestamp& o ) const
+	{
 		uint32_t nanoseconds;
 		uint32_t seconds_ls;
 		uint16_t seconds_ms;
 		uint8_t version;
-		bool carry;
-
-		nanoseconds  = this->nanoseconds;
-		nanoseconds += o.nanoseconds;
-		carry =
-			nanoseconds < this->nanoseconds ||
-			nanoseconds >= MAX_NANOSECONDS ? true : false;
-		nanoseconds -= carry ? MAX_NANOSECONDS : 0;
-
-		seconds_ls  = this->seconds_ls;
-		seconds_ls += o.seconds_ls;
-		seconds_ls += carry ? 1 : 0;
-		carry = seconds_ls < this->seconds_ls ? true : false;
-
-		seconds_ms  = this->seconds_ms;
-		seconds_ms += o.seconds_ms;
-		seconds_ms += carry ? 1 : 0;
-		carry = seconds_ms < this->seconds_ms ? true : false;
+		bool carry, next_carry;
 
 		version = this->_version == o._version ? this->_version :
 			INVALID_TIMESTAMP_VERSION;
-		return Timestamp( nanoseconds, seconds_ls, seconds_ms, version );
+
+		nanoseconds  = this->timestamp.nanoseconds;
+		nanoseconds += o.timestamp.nanoseconds;
+		next_carry = nanoseconds >= MAX_NANOSECONDS;
+		nanoseconds -= next_carry ? MAX_NANOSECONDS : 0;
+
+		seconds_ls  = this->timestamp.seconds_ls;
+		seconds_ls += o.timestamp.seconds_ls;
+		carry = next_carry;
+		next_carry = seconds_ls < this->timestamp.seconds_ls;
+		next_carry |= (seconds_ls + (carry ? 1 : 0)) < seconds_ls;
+		seconds_ls += carry ? 1 : 0;
+
+		seconds_ms  = this->timestamp.seconds_ms;
+		seconds_ms += o.timestamp.seconds_ms;
+		carry = next_carry;
+		next_carry = seconds_ms < this->timestamp.seconds_ms;
+		next_carry |= (seconds_ms + (carry ? 1 : 0)) < seconds_ms;
+		seconds_ms += carry ? 1 : 0;
+
+		return Timestamp
+			( nanoseconds, seconds_ls, seconds_ms, version );
 	}
 
 	/**
@@ -317,45 +355,53 @@ public:
 	 * @param  o Constant reference to the timestamp to be subtracted
 	 * @return Object's timestamp - o.
 	 */
-	Timestamp operator-( const Timestamp& o ) {
+	Timestamp operator-( const Timestamp& o ) const
+	{
 		uint32_t nanoseconds;
 		uint32_t seconds_ls;
 		uint16_t seconds_ms;
 		uint8_t version;
-		bool carry, borrow_this;
-		unsigned borrow_total = 0;
-
-		borrow_this = this->nanoseconds < o.nanoseconds;
-		nanoseconds =
-			((borrow_this ? MAX_NANOSECONDS : 0) + this->nanoseconds) -
-			o.nanoseconds;
-		carry = nanoseconds > MAX_NANOSECONDS;
-		nanoseconds -= carry ? MAX_NANOSECONDS : 0;
-		borrow_total += borrow_this ? 1 : 0;
-
-		seconds_ls  = carry ? 1 : 0;
-		seconds_ls += this->seconds_ls;
-		borrow_this =
-			borrow_total > seconds_ls ||
-			seconds_ls - borrow_total < o.seconds_ls;
-		seconds_ls  =
-			borrow_this ? seconds_ls - o.seconds_ls + (uint32_t)-1 :
-			(seconds_ls - borrow_total) - o.seconds_ls;
-		borrow_total = borrow_this ? borrow_total + 1 : 0;
-
-		seconds_ms  = carry ? 1 : 0;
-		seconds_ms += this->seconds_ms;
-		borrow_this =
-			borrow_total > seconds_ms ||
-			seconds_ms - borrow_total < o.seconds_ms;
-		seconds_ms  =
-			borrow_this ? seconds_ms - o.seconds_ms + (uint32_t)-1 :
-			(seconds_ms - borrow_total) - o.seconds_ms;
-		borrow_total = borrow_this ? borrow_total + 1 : 0;
+		bool borrow, next_borrow;
 
 		version = this->_version == o._version ? this->_version :
 			INVALID_TIMESTAMP_VERSION;
-		return Timestamp( nanoseconds, seconds_ls, seconds_ms, version );
+
+		nanoseconds = this->timestamp.nanoseconds;
+		next_borrow = nanoseconds < o.timestamp.nanoseconds;
+		nanoseconds += next_borrow ? MAX_NANOSECONDS : 0;
+		nanoseconds -= o.timestamp.nanoseconds;
+
+		seconds_ls = this->timestamp.seconds_ls;
+		seconds_ls -= o.timestamp.seconds_ls;
+		borrow = next_borrow;
+		next_borrow = seconds_ls > this->timestamp.seconds_ls;
+		next_borrow |= (seconds_ls - (borrow ? 1 : 0)) > seconds_ls;
+		seconds_ls -= borrow ? 1 : 0;
+
+		seconds_ms = this->timestamp.seconds_ms;
+		seconds_ms -= o.timestamp.seconds_ms;
+		borrow = next_borrow;
+		next_borrow = seconds_ms > this->timestamp.seconds_ms;
+		next_borrow |= (seconds_ms - (borrow ? 1 : 0)) > seconds_ms;
+		seconds_ms -= borrow ? 1 : 0;
+
+		return Timestamp
+			( nanoseconds, seconds_ls, seconds_ms, version );
+	}
+
+	/**
+	 * @brief  Implements the operator '==' overloading method.
+	 * @param  o Constant reference to the timestamp to be compared
+	 * @return true if timestamp is equal
+	 */
+	bool operator==( const Timestamp& o )
+	{
+		if( o.timestamp.nanoseconds == timestamp.nanoseconds	&&
+		    o.timestamp.seconds_ls == timestamp.seconds_ls	&&
+		    o.timestamp.seconds_ms == timestamp.seconds_ms )
+			return true;
+
+		return false;
 	}
 
 	/**
@@ -364,19 +410,81 @@ public:
 	 * @return void
 	 */
 	void set64( uint64_t value ) {
-		nanoseconds = value % 1000000000;
-		seconds_ls = (uint32_t) (value / 1000000000);
-		seconds_ms = (uint16_t)((value / 1000000000) >> 32);
+		timestamp.nanoseconds = value % 1000000000;
+		timestamp.seconds_ls = (uint32_t) (value / 1000000000);
+		timestamp.seconds_ms = (uint16_t)((value / 1000000000) >> 32);
+	}
+
+	/**
+	 * @brief Change from network to host order
+	 */
+	void ntoh( void )
+	{
+		timestamp.ntoh();
+	}
+
+	/**
+	 * @brief Change from host order to network order
+	 */
+	void hton( void )
+	{
+		timestamp.hton();
+	}
+
+	/**
+	 * @brief Change timestamp to 64-bit scalar
+	 */
+	uint64_t getNsScalar( void )
+	{
+		uint64_t ret = timestamp.nanoseconds;
+
+		ret += ((uint64_t)timestamp.seconds_ls) * NSEC_PER_SEC;
+		ret += ((uint64_t) timestamp.seconds_ms <<
+			sizeof( timestamp.seconds_ls )*8 ) * NSEC_PER_SEC;
+
+		return ret;
+	}
+
+	/**
+	 * @brief Get timestamp version
+	 */
+	uint8_t getVersion( void )
+	{
+		return _version;
+	}
+
+	/**
+	 * Set timestamp version
+	 */
+	void setVersion( uint8_t version )
+	{
+		_version = version;
+	}
+
+	/**
+	 * @brief return timestamp member
+	 */
+	_Timestamp getSimpleTimestamp( void ) const
+	{
+		return timestamp;
 	}
 };
 
-#define INVALID_TIMESTAMP (Timestamp( 0xC0000000, 0, 0 ))	/*!< Defines an invalid timestamp using a Timestamp instance and a fixed value*/
-#define PDELAY_PENDING_TIMESTAMP (Timestamp( 0xC0000001, 0, 0 ))	/*!< PDelay is pending timestamp */
+inline	_Timestamp& _Timestamp::operator=( const Timestamp &ts )
+{
+	*this = ts.getSimpleTimestamp();
+
+	return *this;
+}
+
+static const Timestamp INVALID_TIMESTAMP( 0xC0000000, 0, 0 );
+/*!< Defines an invalid timestamp */
+static const Timestamp PDELAY_PENDING_TIMESTAMP( 0xC0000001, 0, 0 );
+/*!< Defines an invalid timestamp flagging transaction as pending  */
 
 static inline uint64_t TIMESTAMP_TO_NS(Timestamp &ts)
 {
-	return (((static_cast<long long int>(ts.seconds_ms) << sizeof(ts.seconds_ls)*8) +
-			      ts.seconds_ls)*1000000000LL + ts.nanoseconds)	;	/*!< Converts timestamp value into nanoseconds value*/
+	return ts.getNsScalar();
 }
 
 /**
@@ -409,23 +517,10 @@ static inline uint64_t byte_swap64(uint64_t in)
  * @return void
  */
 static inline void TIMESTAMP_SUB_NS( Timestamp &ts, uint64_t ns ) {
-       uint64_t secs = (uint64_t)ts.seconds_ls | ((uint64_t)ts.seconds_ms) << 32;
-	   uint64_t nanos = (uint64_t)ts.nanoseconds;
+	Timestamp sub;
 
-       secs -= ns / NS_PER_SECOND;
-	   ns = ns % NS_PER_SECOND;
-
-	   if(ns > nanos)
-	   {  //borrow
-          nanos += NS_PER_SECOND;
-		  --secs;
-	   }
-
-	   nanos -= ns;
-
-	   ts.seconds_ms = (uint16_t)(secs >> 32);
-	   ts.seconds_ls = (uint32_t)(secs & LS_SEC_MAX);
-	   ts.nanoseconds = (uint32_t)nanos;
+	sub.set64( ns );
+	ts = ts - sub;
 }
 
 /**
@@ -434,34 +529,12 @@ static inline void TIMESTAMP_SUB_NS( Timestamp &ts, uint64_t ns ) {
  * @param  ns Nanoseconds value to add to ts
  * @return void
  */
-static inline void TIMESTAMP_ADD_NS( Timestamp &ts, uint64_t ns ) {
-       uint64_t secs = (uint64_t)ts.seconds_ls | ((uint64_t)ts.seconds_ms) << 32;
-	   uint64_t nanos = (uint64_t)ts.nanoseconds;
+static inline void TIMESTAMP_ADD_NS( Timestamp &ts, uint64_t ns )
+{
+	Timestamp add;
 
-       secs += ns / NS_PER_SECOND;
-	   nanos += ns % NS_PER_SECOND;
-
-	   if(nanos > NS_PER_SECOND)
-	   {  //carry
-          nanos -= NS_PER_SECOND;
-		  ++secs;
-	   }
-
-	   ts.seconds_ms = (uint16_t)(secs >> 32);
-	   ts.seconds_ls = (uint32_t)(secs & LS_SEC_MAX);
-	   ts.nanoseconds = (uint32_t)nanos;
+	add.set64( ns );
+	ts = ts + add;
 }
-
-/**
- * @brief  Builds a PTP message
- * @param  buf [in] message buffer to send
- * @param  size message length
- * @param  remote Destination link layer address
- * @param  port [in] IEEE1588 port
- * @return PTP message instance of PTPMessageCommon
- */
-PTPMessageCommon *buildPTPMessage
-( char *buf, int size, LinkLayerAddress *remote,
-  EtherPort *port );
 
 #endif

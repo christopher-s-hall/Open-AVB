@@ -41,107 +41,147 @@
 #include <list>
 #include <algorithm>
 
+#include <ether_port.hpp>
+
 /** @file **/
 
 #define PTP_CODE_STRING_LENGTH 4		/*!< PTP code string length in bytes */
 #define PTP_SUBDOMAIN_NAME_LENGTH 16	/*!< PTP subdomain name lenght in bytes */
-#define PTP_FLAGS_LENGTH 2				/*!< PTP flags length in bytes */
 
 #define GPTP_VERSION 2			/*!< GPTP version */
 #define PTP_NETWORK_VERSION 1	/*!< PTP Network version */
+#define GPTP_TRANSPORT_SPECIFIC (0x1)	//!< Transport specific for 802.1AS
 
 #define PTP_ETHER 1		/*!< @todo Not used */
 #define PTP_DEFAULT 255	/*!< @todo Not used */
 
+/*Exact fit. No padding*/
+#pragma pack(push,1)
+
+/**
+ * @brief Common header Flags field 802.1AS-2011 tables 10-6 & 11-4
+ */
+typedef struct
+{
+	unsigned int	reserved0		: 1;
+	unsigned int	twoStepFlag		: 1;
+	unsigned int	reserved1		: 6;
+	unsigned int	leap61			: 1;
+	unsigned int	leap59			: 1;
+	unsigned int	currentUtcOffsetValid	: 1;
+	unsigned int	ptpTimescale		: 1;
+	unsigned int	timeTraceable		: 1;
+	unsigned int	frequencyTraceable	: 1;
+	unsigned int	reserved2		: 2;
+} header_flags_t;
+
+/**
+ * @brief Common header 802.1AS-2011 table 10-4
+ */
+typedef struct
+{
+	unsigned int	messageType		: 4;
+	unsigned int	transportSpecific	: 4;
+	unsigned int	versionPTP		: 4;
+	unsigned int	reserved0		: 4;
+	uint16_t	messageLength;
+	uint8_t		domainNumber;
+	uint8_t		reserved1;
+	header_flags_t	flags;
+	int64_t		correctionField;
+	uint32_t	reserved2;
+	PortIdentity	sourcePortIdentity;
+	uint16_t	sequenceId;
+	uint8_t		control;
+	uint8_t		logMessageInterval;
+} common_header_t;
+
+/**
+ * @brief Announce payload 802.1AS-2011 table 10-7
+ */
+typedef struct
+{
+	uint8_t		reserved0[10];
+	int16_t		currentUtcOffset;
+	uint8_t		reserved1;
+	uint8_t		grandmasterPriority1;
+	ClockQuality	grandmasterClockQuality;
+	uint8_t		grandmasterPriority2;
+	ClockIdentity	grandmasterIdentity;
+	uint16_t	stepsRemoved;
+	uint8_t		timeSource;
+} announce_msg_t;
+
+/**
+ * @brief FollowUp payload 802.1AS-2011 table 11-9
+ */
+typedef struct
+{
+	_Timestamp	preciseOriginTimestamp;
+	FollowUpTLV	tlv;
+} followup_msg_t;
+
+/**
+ * @brief Pdelay Response payload 802.1AS-2011 table 11-12
+ */
+typedef struct
+{
+	_Timestamp	requestReceiptTimestamp;
+	PortIdentity	requestingPortIdentity;
+} pdelay_resp_msg_t;
+
+/**
+ * @brief Pdelay Response FollowUp payload 802.1AS-2011 table 11-12
+ */
+typedef struct
+{
+	_Timestamp	responseOriginTimestamp;
+	PortIdentity	requestingPortIdentity;
+} pdelay_fwup_msg_t;
+
+/* back to whatever the previous packing mode was */
+#pragma pack(pop)
+
 #define PTP_COMMON_HDR_OFFSET 0		/*!< PTP common header offset */
-#define PTP_COMMON_HDR_LENGTH 34	/*!< PTP common header length in bytes */
-#define PTP_COMMON_HDR_TRANSSPEC_MSGTYPE(x) x	/*!< Gets the message type offset on PTP header */
-#define PTP_COMMON_HDR_PTP_VERSION(x) x+1		/*!< Gets the ptp version offset on PTP header */
-#define PTP_COMMON_HDR_MSG_LENGTH(x) x+2		/*!< Gets the message length offset on PTP header */
-#define PTP_COMMON_HDR_DOMAIN_NUMBER(x) x+4		/*!< Gets the domain number offset on PTP header */
-#define PTP_COMMON_HDR_FLAGS(x) x+6				/*!< Gets the flags offset on PTP header */
-#define PTP_COMMON_HDR_CORRECTION(x) x+8		/*!< Gets the correction field offset on PTP header */
-#define PTP_COMMON_HDR_SOURCE_CLOCK_ID(x) x+20	/*!< Gets the source clock id offset on PTP header */
-#define PTP_COMMON_HDR_SOURCE_PORT_ID(x) x+28	/*!< Gets the source port id offset on PTP header */
-#define PTP_COMMON_HDR_SEQUENCE_ID(x) x+30		/*!< Gets the sequence id offset on PTP header */
-#define PTP_COMMON_HDR_CONTROL(x) x+32			/*!< Gets the control offset on PTP header */
-#define PTP_COMMON_HDR_LOG_MSG_INTRVL(x) x+33	/*!< Gets the log message interval offset on PTP header */
+#define PTP_COMMON_HDR_LENGTH ((int)sizeof(common_header_t))
+//!< PTP common header length (bytes)
 
-#define PTP_ANNOUNCE_OFFSET 34							/*!< PTP announce offset */
-#define PTP_ANNOUNCE_LENGTH 30							/*!< PTP announce length in bytes */
-#define PTP_ANNOUNCE_CURRENT_UTC_OFFSET(x) x+10			/*!< Gets PTP announce current UTC offset */
-#define PTP_ANNOUNCE_GRANDMASTER_PRIORITY1(x) x+13		/*!< Gets Grandmaster priority1 offset on announce fields */
-#define PTP_ANNOUNCE_GRANDMASTER_CLOCK_QUALITY(x) x+14	/*!< Gets Grandmaster clock quality offset on announce fields */
-#define PTP_ANNOUNCE_GRANDMASTER_PRIORITY2(x) x+18		/*!< Gets Grandmasdter priority2 offset on announce fields*/
-#define PTP_ANNOUNCE_GRANDMASTER_IDENTITY(x) x+19		/*!< Gets Grandmaster identity offset on announce fields*/
-#define PTP_ANNOUNCE_STEPS_REMOVED(x) x+27				/*!< Gets steps removed offset on announce fields*/
-#define PTP_ANNOUNCE_TIME_SOURCE(x) x+29				/*!< Gets time source offset on announce fields*/
+#define PTP_ANNOUNCE_OFFSET PTP_COMMON_HDR_LENGTH /*!< PTP announce offset */
+#define PTP_ANNOUNCE_LENGTH ((int)sizeof(announce_msg_t))
+/*!< PTP announce length in bytes */
 
-#define PTP_SYNC_OFFSET 34		/*!< PTP SYNC base offset */
-#define PTP_SYNC_LENGTH 10		/*!< PTP SYNC length in bytes */
-#define PTP_SYNC_SEC_MS(x) x	/*!< PTP SYNC seconds MSB offset */
-#define PTP_SYNC_SEC_LS(x) x+2	/*!< PTP SYNC seconds LSB offset */
-#define PTP_SYNC_NSEC(x) x+6	/*!< PTP SYNC nanoseconds offset */
+#define PTP_SYNC_OFFSET PTP_COMMON_HDR_LENGTH /*!< PTP SYNC base offset */
+#define PTP_SYNC_LENGTH ((int)sizeof(Timestamp))
+/*!< PTP SYNC length in bytes */
 
-#define PTP_FOLLOWUP_OFFSET 34		/*!< PTP FOLLOWUP base offset */
-#define PTP_FOLLOWUP_LENGTH 10		/*!< PTP FOLLOWUP length in bytes */
-#define PTP_FOLLOWUP_SEC_MS(x) x	/*!< Gets the followup seconds MSB offset */
-#define PTP_FOLLOWUP_SEC_LS(x) x+2	/*!< Gets the followup seconds LSB offset */
-#define PTP_FOLLOWUP_NSEC(x) x+6	/*!< Gets tne followup nanoseconds offset */
+/// PTP FOLLOWUP base offset
+#define PTP_FOLLOWUP_OFFSET PTP_COMMON_HDR_LENGTH
+/*!< PTP FOLLOWUP base offset */
+#define PTP_FOLLOWUP_LENGTH ((int)sizeof(followup_msg_t))
+/*!< PTP FOLLOWUP length in bytes */
 
-#define PTP_PDELAY_REQ_OFFSET 34		/*!< PTP PDELAY REQUEST base offset */
-#define PTP_PDELAY_REQ_LENGTH 20		/*!< PTP PDELAY REQUEST length in bytes */
-#define PTP_PDELAY_REQ_SEC_MS(x) x		/*!< Gets the pdelay request seconds MSB offset */
-#define PTP_PDELAY_REQ_SEC_LS(x) x+2	/*!< Gets the pdelay request seconds LSB offset */
-#define PTP_PDELAY_REQ_NSEC(x) x+6		/*!< Gets the pdelay request nanoseconds offset */
+#define PTP_PDELAY_REQ_OFFSET PTP_COMMON_HDR_LENGTH
+/*!< PTP PDELAY REQUEST base offset */
+#define PTP_PDELAY_REQ_LENGTH ((int)(sizeof(_Timestamp)+sizeof(PortIdentity)))
+/*!< PTP PDELAY REQUEST length in bytes */
 
-#define PTP_PDELAY_RESP_OFFSET 34				/*!< PDELAY RESPONSE base offset */
-#define PTP_PDELAY_RESP_LENGTH 20				/*!< PDELAY RESPONSE length in bytes */
-#define PTP_PDELAY_RESP_SEC_MS(x) x				/*!< Gets the pdelay response seconds MSB offset */
-#define PTP_PDELAY_RESP_SEC_LS(x) x+2			/*!< Gets the pdelay response seconds LSB offset */
-#define PTP_PDELAY_RESP_NSEC(x) x+6				/*!< Gets the pdelay nanoseconds offset */
-#define PTP_PDELAY_RESP_REQ_CLOCK_ID(x) x+10	/*!< Gets the pdelay response request clock id offset */
-#define PTP_PDELAY_RESP_REQ_PORT_ID(x) x+18		/*!< Gets the pdelay response request port id offset */
+#define PTP_PDELAY_RESP_OFFSET PTP_COMMON_HDR_LENGTH
+/*!< PDELAY RESPONSE base offset */
+#define PTP_PDELAY_RESP_LENGTH ((int)sizeof(pdelay_resp_msg_t))
+/*!< PDELAY RESPONSE length in bytes */
 
-#define PTP_PDELAY_FOLLOWUP_OFFSET 34				/*!< PTP PDELAY FOLLOWUP base offset*/
-#define PTP_PDELAY_FOLLOWUP_LENGTH 20				/*!< PTP PDELAY FOLLOWUP length in bytes */
-#define PTP_PDELAY_FOLLOWUP_SEC_MS(x) x				/*!< Gets the pdelay followup seconds MSB offset*/
-#define PTP_PDELAY_FOLLOWUP_SEC_LS(x) x+2			/*!< Gets the pdelay followup seconds LSB offset*/
-#define PTP_PDELAY_FOLLOWUP_NSEC(x) x+6				/*!< Gets the pdelay followup nanoseconds offset*/
-#define PTP_PDELAY_FOLLOWUP_REQ_CLOCK_ID(x) x+10	/*!< Gets the pdelay followup request clock id offset*/
-#define PTP_PDELAY_FOLLOWUP_REQ_PORT_ID(x) x+18		/*!< Gets the pdelay followup request port id offset*/
+#define PTP_PDELAY_FWUP_OFFSET PTP_COMMON_HDR_LENGTH
+/*!< PTP PDELAY FOLLOWUP base offset*/
+#define PTP_PDELAY_FWUP_LENGTH ((int)sizeof(pdelay_fwup_msg_t))
+/*!< PTP PDELAY FOLLOWUP length in bytes */
 
-#define PTP_SIGNALLING_OFFSET 34                        /*!< PTP signalling offset */
+#define PTP_SIGNALLING_OFFSET PTP_COMMON_HDR_LENGTH
+/*!< PTP signalling offset */
 #define PTP_SIGNALLING_LENGTH 10                        /*!< PTP signalling length in bytes */
 #define PTP_SIGNALLING_TARGET_PORT_IDENTITY(x) x        /*!< PTP signalling Tareget Port Identity */
 
-#define PTP_LI_61_BYTE 1		/*!< PTP_LI_61(leap61) byte offset on flags field */
-#define PTP_LI_61_BIT 0			/*!< PTP_LI_61(leap61) bit offset on PTP_LI_61 byte*/
-#define PTP_LI_59_BYTE 1		/*!< PTP_LI_59(leap59) byte offset on flags field*/
-#define PTP_LI_59_BIT 1			/*!< PTP_LI_59(leap59) bit offset on PTP_LI_59 byte*/
-#define PTP_ASSIST_BYTE 0		/*!< PTP_ASSIST(two step flag) byte offset on flags field*/
-#define PTP_ASSIST_BIT 1		/*!< PTP_ASSIST(two step flag) bit on PTP_ASSIST byte*/
-#define PTP_PTPTIMESCALE_BYTE 1	/*!< PTPTIMESCALE byte offset on flags field*/
-#define PTP_PTPTIMESCALE_BIT 3	/*!< PTPTIMESCAPE bit offset on PTPTIMESCALE byte*/
-
 #define TX_TIMEOUT_BASE 1000 	/*!< Timeout base in microseconds */
 #define TX_TIMEOUT_ITER 6		/*!< Number of timeout iteractions for sending/receiving messages*/
-
-/**
- * @brief Enumeration message type. IEEE 1588-2008 Clause 13.3.2.2
- */
-enum MessageType {
-	SYNC_MESSAGE = 0,
-	DELAY_REQ_MESSAGE = 1,
-	PATH_DELAY_REQ_MESSAGE = 2,
-	PATH_DELAY_RESP_MESSAGE = 3,
-	FOLLOWUP_MESSAGE = 8,
-	DELAY_RESP_MESSAGE = 9,
-	PATH_DELAY_FOLLOWUP_MESSAGE = 0xA,
-	ANNOUNCE_MESSAGE = 0xB,
-	SIGNALLING_MESSAGE = 0xC,
-	MANAGEMENT_MESSAGE = 0xD,
-};
 
 /**
  * @brief Enumeration legacy message type
@@ -156,54 +196,6 @@ enum LegacyMessageType {
 };
 
 /**
- * @brief Enumeration multicast type.
- */
-enum MulticastType {
-	MCAST_NONE,
-	MCAST_PDELAY,
-	MCAST_TEST_STATUS,
-	MCAST_OTHER
-};
-
-class PTPMessageId {
-	MessageType _messageType;
-	uint16_t _sequenceId;
-public:
-	PTPMessageId() { };
-	PTPMessageId(MessageType messageType, uint16_t sequenceId) :
-		_messageType(messageType),_sequenceId(sequenceId) { }
-	PTPMessageId(const PTPMessageId& a) {
-		_messageType = a._messageType;
-		_sequenceId = a._sequenceId;
-	}
-
-	MessageType getMessageType(void) {
-		return _messageType;
-	}
-	void setMessageType(MessageType messageType) {
-		_messageType = messageType;
-	}
-
-	uint16_t getSequenceId(void) {
-		return _sequenceId;
-	}
-	void setSequenceId(uint16_t sequenceId) {
-		_sequenceId = sequenceId;
-	}
-
-	bool operator!=(const PTPMessageId & cmp) const {
-		return
-			this->_sequenceId != cmp._sequenceId ||
-			this->_messageType != cmp._messageType ? true : false;
-	}
-	bool operator==(const PTPMessageId & cmp)const {
-		return
-			this->_sequenceId == cmp._sequenceId &&
-			this->_messageType == cmp._messageType ? true : false;
-	}
-};
-
-/**
  * @brief Provides the PTPMessage common interface used during building of
  * PTP messages.
  */
@@ -213,25 +205,24 @@ protected:
 	uint16_t versionNetwork;	/*!< Network version */
 	MessageType messageType;	/*!< MessageType to be built */
 
-	PortIdentity *sourcePortIdentity;	/*!< PortIdentity from source*/
+	PortIdentity sourcePortIdentity;	/*!< PortIdentity from source*/
 
 	uint16_t sequenceId;		/*!< PTP message sequence ID*/
 	LegacyMessageType control;	/*!< Control message type of LegacyMessageType */
-	unsigned char flags[2];		/*!< PTP flags field */
+	header_flags_t flags;		/*!< PTP flags field */
 
 	uint16_t messageLength;			/*!< PTP message length */
 	char logMeanMessageInterval;	/*!< LogMessageInterval (IEEE 1588-2008 table 24)*/
 	long long correctionField;		/*!< Correction Field (IEEE 1588-2008 table 21) */
 	unsigned char domainNumber;		/*!< PTP domain number */
 
-	Timestamp _timestamp;	/*!< PTP message timestamp */
-	unsigned _timestamp_counter_value;	/*!< PTP timestamp counter value */
 	bool _gc;	/*!< Garbage collection flag */
 
 	/**
-	 * @brief Default constructor
+	 * @brief Default constructor used only by buildPTPMessage()
 	 */
-	PTPMessageCommon(void) { };
+	PTPMessageCommon() {};
+
  public:
 	/**
 	 * @brief Creates the PTPMessageCommon interface
@@ -242,15 +233,7 @@ protected:
 	/**
 	 * @brief Destroys PTPMessageCommon interface
 	 */
-	virtual ~PTPMessageCommon(void);
-
-	/**
-	 * @brief  Gets a pointer to the flags field within the PTP message.
-	 * @return Pointer to the flags field
-	 */
-	unsigned char *getFlags(void) {
-		return flags;
-	}
+	virtual ~PTPMessageCommon(void) {}
 
 	/**
 	 * @brief  Gets the sequenceId value within a ptp message
@@ -284,13 +267,6 @@ protected:
 	{
 		return (( messageType >> 3) & 0x1 ) == 0;
 	}
-
-	/**
-	 * @brief Get TX timestamp
-	 * @param port used to send message
-	 * @param link_speed link speed of message
-	 */
-	bool getTxTimestamp( EtherPort *port, uint32_t link_speed );
 
 	/**
 	 * @brief  Gets the MessageID of the PTP message.
@@ -333,29 +309,6 @@ protected:
 	void setPortIdentity(PortIdentity * identity);
 
 	/**
-	 * @brief  Gets the current Timestamp value from the PTP message
-	 * @return Current Timestamp value
-	 */
-	Timestamp getTimestamp(void) {
-		return _timestamp;
-	}
-	/**
-	 * @brief  Gets the timestamp counter value set during the RX timestamp method.
-	 * @return timestamp counter value
-	 */
-	uint32_t getTimestampCounterValue(void) {
-		return _timestamp_counter_value;;
-	}
-	/**
-	 * @brief  Sets the timestamp value
-	 * @param  timestamp [in] Reference to Timestamp value
-	 * @return void
-	 */
-	void setTimestamp(Timestamp & timestamp) {
-		_timestamp = timestamp;
-	}
-
-	/**
 	 * @brief Gets the garbage collection status
 	 * @return TRUE when it needs to be clean. FALSE otherwise.
 	 */
@@ -385,9 +338,85 @@ protected:
 	 */
 	void buildCommonHeader(uint8_t * buf);
 
-	friend PTPMessageCommon *buildPTPMessage
+	/**
+	 * @brief parses buffer and creates PTP message
+	 * @param [in] buf		contains frame
+	 * @param [in] size		frame length
+	 * @param [out] remote		address buffer was received from
+	 * @param [in] port		port frame was received on
+	 * @return NULL on failure, otherwise pointer to message object
+	 */
+	friend PTPMessageCommon *buildPTPMessageCommon
 	( char *buf, int size, LinkLayerAddress * remote,
-	  EtherPort *port );
+	  CommonPort *port );
+};
+
+class PTPMessageEvent : public PTPMessageCommon
+{
+protected:
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessageEvent() {};
+
+	Timestamp _timestamp;	/*!< PTP message timestamp */
+	unsigned _timestamp_counter_value;	//!< PTP timestamp counter
+						//!< value
+
+public:
+	/**
+	 * @brief Creates the PTPMessageEvent interface
+	 * @param port EtherPort where the message interface is
+	 * connected to.
+	 */
+	PTPMessageEvent( EtherPort *port ) :
+		PTPMessageCommon( port ) {}
+
+	/**
+	 * @brief Destroys PTPMessageEvent
+	 */
+	virtual ~PTPMessageEvent(void) {}
+
+	/**
+	 * @brief  Gets the current Timestamp value from the PTP message
+	 * @return Current Timestamp value
+	 */
+	Timestamp getTimestamp(void) {
+		return _timestamp;
+	}
+	/**
+	 * @brief  Gets the timestamp counter value set during the RX
+	 *	timestamp method.
+	 * @return timestamp counter value
+	 */
+	uint32_t getTimestampCounterValue(void)
+	{
+		return _timestamp_counter_value;;
+	}
+
+	/**
+	 * @brief  Sets the timestamp value
+	 * @param  timestamp [in] Reference to Timestamp value
+	 * @return void
+	 */
+	void setTimestamp(Timestamp & timestamp)
+	{
+		_timestamp = timestamp;
+	}
+
+	/**
+	 * @brief Get TX timestamp
+	 * @param port used to send message
+	 * @param link_speed link speed of message
+	 */
+	bool getTxTimestamp( EtherPort *port, uint32_t link_speed );
+
+
+	friend PTPMessageCommon *buildPTPMessageCommon
+	( char *buf, int size, LinkLayerAddress * remote,
+	  CommonPort *port );
+	friend PTPMessageCommon *buildPTPMessageEvent
+	( PTPMessageEvent *msg,  CommonPort *cport, char *buf, int size );
 };
 
 /*Exact fit. No padding*/
@@ -506,19 +535,21 @@ class PathTraceTLV {
  */
 class PTPMessageAnnounce:public PTPMessageCommon {
  private:
-	uint8_t grandmasterIdentity[PTP_CLOCK_IDENTITY_LENGTH];
-	ClockQuality *grandmasterClockQuality;
+	ClockIdentity grandmasterIdentity;
+	ClockQuality grandmasterClockQuality;
 
 	PathTraceTLV tlv;
 
 	uint16_t currentUtcOffset;
 	unsigned char grandmasterPriority1;
 	unsigned char grandmasterPriority2;
-	ClockQuality *clockQuality;
 	uint16_t stepsRemoved;
 	unsigned char timeSource;
 
-	 PTPMessageAnnounce(void);
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessageAnnounce(void) {}
  public:
 	 /**
 	  * @brief Creates the PTPMessageAnnounce interface
@@ -528,7 +559,7 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 /**
 	  * @brief Destroys the PTPMessageAnnounce interface
 	  */
-	~PTPMessageAnnounce();
+	~PTPMessageAnnounce() {}
 
 	/**
 	 * @brief  Compare gramdmaster's capabilities comming on the
@@ -559,7 +590,7 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 * @return Pointer to a ClockQuality object.
 	 */
 	ClockQuality *getGrandmasterClockQuality(void) {
-		return grandmasterClockQuality;
+		return &grandmasterClockQuality;
 	}
 
 	/**
@@ -575,8 +606,9 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 * @param  identity [out] Grandmaster identity
 	 * @return void
 	 */
-	void getGrandmasterIdentity(char *identity) {
-		memcpy(identity, grandmasterIdentity, PTP_CLOCK_IDENTITY_LENGTH);
+	void getGrandmasterIdentity( uint8_t *identity )
+	{
+		grandmasterIdentity.getIdentityString( identity );
 	}
 
 	/**
@@ -584,9 +616,7 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	 * @return Grandmaster ClockIdentity
 	 */
 	ClockIdentity getGrandmasterClockIdentity() {
-		ClockIdentity ret;
-		ret.set( grandmasterIdentity );
-		return ret;
+		return grandmasterIdentity;
 	}
 
 	/**
@@ -607,19 +637,22 @@ class PTPMessageAnnounce:public PTPMessageCommon {
 	bool sendPort
 	( CommonPort *port, PortIdentity *destIdentity);
 
-	friend PTPMessageCommon *buildPTPMessage
+	friend PTPMessageCommon *buildPTPMessageCommon
 	( char *buf, int size, LinkLayerAddress *remote,
-	  EtherPort *port );
+	  CommonPort *port );
 };
 
 /**
  * @brief Provides a class for building the PTP Sync message
  */
-class PTPMessageSync : public PTPMessageCommon {
+class PTPMessageSync : public PTPMessageEvent {
  private:
 	Timestamp originTimestamp;
 
-	PTPMessageSync();
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessageSync() {}
  public:
 	/**
 	 * @brief Default constructor. Creates PTPMessageSync
@@ -630,7 +663,7 @@ class PTPMessageSync : public PTPMessageCommon {
 	/**
 	 * @brief Destroys PTPMessageSync interface
 	 */
-	~PTPMessageSync();
+	~PTPMessageSync() {}
 
 	/**
 	 * @brief  Processes PTP messages
@@ -658,199 +691,9 @@ class PTPMessageSync : public PTPMessageCommon {
 	bool sendPort
 	(EtherPort *port, PortIdentity *destIdentity );
 
-	friend PTPMessageCommon *buildPTPMessage
-	( char *buf, int size, LinkLayerAddress * remote,
-	  EtherPort *port );
+	friend PTPMessageCommon *buildPTPMessageEvent
+	( PTPMessageEvent *msg,  CommonPort *cport, char *buf, int size );
 };
-
-/* Exact fit. No padding*/
-#pragma pack(push,1)
-
-/**
- * @brief Provides a scaledNs interface
- * The scaledNs type represents signed values of time and time interval in units of 2e-16 ns.
- */
-class scaledNs {
- private:
-	int32_t ms;
-	uint64_t ls;
- public:
-	/**
-	 * @brief Builds scaledNs interface
-	 */
-	scaledNs() {
-		ms = 0;
-		ls = 0;
-	}
-
-	/**
-	 * @brief  Gets scaledNs in a byte string format
-	 * @param  byte_str [out] scaledNs value
-	 * @return void
-	 */
-	void toByteString(uint8_t * byte_str) {
-		memcpy(byte_str, this, sizeof(*this));
-	}
-
-	/**
-	 * @brief  Overloads the operator = for this class
-	 * @param  other Value to be attributed to this object's instance.
-	 * @return Reference to scaledNs object
-	 */
-	scaledNs& operator=(const scaledNs& other)
-	{
-		this->ms = other.ms;
-		this->ls = other.ls;
-
-		return *this;
-	}
-
-	/**
-	 * @brief  Set the lowest 64bits from the scaledNs object
-	 * @param  lsb Value to be set
-	 * @return void
-	 */
-	void setLSB(uint64_t lsb)
-	{
-		this->ls = lsb;
-	}
-
-	/**
-	 * @brief  Set the highest 32bits of the scaledNs object
-	 * @param  msb 32-bit signed integer to be set
-	 * @return void
-	 */
-	void setMSB(int32_t msb)
-	{
-		this->ms = msb;
-	}
-};
-
-/**
- * @brief Provides a follow-up TLV interface back to the previous packing mode
- */
-class FollowUpTLV {
- private:
-	uint16_t tlvType;
-	uint16_t lengthField;
-	uint8_t organizationId[3];
-	uint8_t organizationSubType_ms;
-	uint16_t organizationSubType_ls;
-	int32_t cumulativeScaledRateOffset;
-	uint16_t gmTimeBaseIndicator;
-	scaledNs scaledLastGmPhaseChange;
-	int32_t scaledLastGmFreqChange;
- public:
-	/**
-	 * @brief Builds the FollowUpTLV interface
-	 */
-	FollowUpTLV() {
-		tlvType = PLAT_htons(0x3);
-		lengthField = PLAT_htons(28);
-		organizationId[0] = '\x00';
-		organizationId[1] = '\x80';
-		organizationId[2] = '\xC2';
-		organizationSubType_ms = 0;
-		organizationSubType_ls = PLAT_htons(1);
-		cumulativeScaledRateOffset = PLAT_htonl(0);
-		gmTimeBaseIndicator = 0;
-		scaledLastGmFreqChange = PLAT_htonl(0);
-	}
-
-	/**
-	 * @brief  Gets FollowUpTLV information in a byte string format
-	 * @param  byte_str [out] FollowUpTLV values
-	 */
-	void toByteString(uint8_t * byte_str) {
-		memcpy(byte_str, this, sizeof(*this));
-	}
-
-	/**
-	 * @brief  Gets the cummulative scaledRateOffset
-	 * @return 32 bit signed value with the rate offset information.
-	 */
-	int32_t getRateOffset() {
-		return cumulativeScaledRateOffset;
-	}
-
-	/**
-	 * @brief Gets the gmTimeBaseIndicator
-	 * @return 16 bit unsigned value of the gmTimeBaseIndicator
-	 *         information
-	 */
-	uint16_t getGmTimeBaseIndicator() {
-		return gmTimeBaseIndicator;
-	}
-
-	/**
-	 * @brief  Updates the scaledLastGmFreqChanged private member
-	 * @param  val Value to be set
-	 * @return void
-	 */
-	void setScaledLastGmFreqChange(int32_t val)
-	{
-		scaledLastGmFreqChange = PLAT_htonl(val);
-	}
-
-	/**
-	 * @brief  Gets the current scaledLastGmFreqChanged value
-	 * @return scaledLastGmFreqChange
-	 */
-	int32_t getScaledLastGmFreqChange(void)
-	{
-		return scaledLastGmFreqChange;
-	}
-
-	/**
-	 * @brief  Sets the gmTimeBaseIndicator private member
-	 * @param  tbi Value to be set
-	 * @return void
-	 */
-	void setGMTimeBaseIndicator(uint16_t tbi)
-	{
-		gmTimeBaseIndicator = tbi;
-	}
-
-	/**
-	 * @brief  Incremets the Time Base Indicator member
-	 * @return void
-	 */
-	void incrementGMTimeBaseIndicator(void)
-	{
-		++gmTimeBaseIndicator;
-	}
-
-	/**
-	 * @brief  Gets the current gmTimeBaseIndicator value
-	 * @return gmTimeBaseIndicator
-	 */
-	uint16_t getGMTimeBaseIndicator(void)
-	{
-		return gmTimeBaseIndicator;
-	}
-
-	/**
-	 * @brief  Sets the scaledLastGmPhaseChange private member
-	 * @param  pc Value to be set
-	 * @return void
-	 */
-	void setScaledLastGmPhaseChange(scaledNs pc)
-	{
-		scaledLastGmPhaseChange = pc;
-	}
-
-	/**
-	 * @brief  Gets the scaledLastGmPhaseChange private member value
-	 * @return scaledLastGmPhaseChange value
-	 */
-	scaledNs getScaledLastGmPhaseChange(void)
-	{
-		return scaledLastGmPhaseChange;
-	}
-};
-
-/* back to whatever the previous packing mode was */
-#pragma pack(pop)
 
 /**
  * @brief Provides a class for a class for building a PTP follow up message
@@ -861,12 +704,22 @@ private:
 
 	FollowUpTLV tlv;
 
-	PTPMessageFollowUp(void) { }
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessageFollowUp() {}
 public:
 	/**
 	 * @brief Builds the PTPMessageFollowUP object
 	 */
-	PTPMessageFollowUp( EtherPort *port );
+	PTPMessageFollowUp( CommonPort *port );
+
+	/**
+	 * @brief Writes payload for transmission in network order
+	 * @param buf	containing message
+	 * @param port	that message is transmitted on
+	 */
+	void writeTxBuffer( uint8_t *buf, CommonPort *port )
 
 	/**
 	 * @brief  Assembles PTPMessageFollowUp message on the
@@ -915,21 +768,22 @@ public:
 		tlv.setScaledLastGmPhaseChange(fup->getScaledLastGmPhaseChange());
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
+	friend PTPMessageCommon *buildPTPMessageCommon
 	( char *buf, int size, LinkLayerAddress *remote,
-	  EtherPort *port );
+	  CommonPort *port );
 };
 
 /**
  * @brief Provides a class for building the PTP Path Delay Request message
  */
-class PTPMessagePathDelayReq : public PTPMessageCommon {
+class PTPMessagePathDelayReq : public PTPMessageEvent {
  private:
 	Timestamp originTimestamp;
 
-	PTPMessagePathDelayReq() {
-		return;
-	}
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessagePathDelayReq() {}
  public:
 	/**
 	 * @brief Destroys the PTPMessagePathDelayReq object
@@ -968,26 +822,27 @@ class PTPMessagePathDelayReq : public PTPMessageCommon {
 		return originTimestamp;
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
-	( char *buf, int size, LinkLayerAddress *remote,
-	  EtherPort *port );
+	friend PTPMessageCommon *buildPTPMessageEvent
+	( PTPMessageEvent *msg,  CommonPort *cport, char *buf, int size );
 };
 
 /**
  * @brief Provides a class for building the PTP Path Delay Response message.
  */
-class PTPMessagePathDelayResp:public PTPMessageCommon {
+class PTPMessagePathDelayResp : public PTPMessageEvent {
 private:
-	PortIdentity * requestingPortIdentity;
+	PortIdentity requestingPortIdentity;
 	Timestamp requestReceiptTimestamp;
 
-	PTPMessagePathDelayResp(void) {
-	}
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessagePathDelayResp() {}
 public:
 	/**
 	 * @brief Destroys the PTPMessagePathDelayResp object
 	 */
-	~PTPMessagePathDelayResp();
+	~PTPMessagePathDelayResp() {}
 	/**
 	 * @brief Builds the PTPMessagePathDelayResp object
 	 */
@@ -1041,9 +896,8 @@ public:
 		return requestReceiptTimestamp;
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
-	( char *buf, int size, LinkLayerAddress *remote,
-	  EtherPort *port );
+	friend PTPMessageCommon *buildPTPMessageEvent
+	( PTPMessageEvent *msg, CommonPort *cport, char *buf, int size );
 };
 
 /**
@@ -1052,10 +906,12 @@ public:
 class PTPMessagePathDelayRespFollowUp:public PTPMessageCommon {
  private:
 	Timestamp responseOriginTimestamp;
-	PortIdentity *requestingPortIdentity;
+	PortIdentity requestingPortIdentity;
 
-	PTPMessagePathDelayRespFollowUp(void) { }
-
+	/**
+	 * @brief Default constructor used only by buildPTPMessage()
+	 */
+	PTPMessagePathDelayRespFollowUp() {}
 public:
 	/**
 	 * @brief Builds the PTPMessagePathDelayRespFollowUp object
@@ -1065,7 +921,7 @@ public:
 	/**
 	 * @brief Destroys the PTPMessagePathDelayRespFollowUp object
 	 */
-	~PTPMessagePathDelayRespFollowUp();
+	~PTPMessagePathDelayRespFollowUp() {}
 
 	/**
 	 * @brief  Assembles PTPMessageRespFollowUp message on the
@@ -1112,12 +968,12 @@ public:
 	 * @return Pointer to requesting PortIdentity object
 	 */
 	PortIdentity *getRequestingPortIdentity(void) {
-		return requestingPortIdentity;
+		return &requestingPortIdentity;
 	}
 
-	friend PTPMessageCommon *buildPTPMessage
+	friend PTPMessageCommon *buildPTPMessageCommon
 	( char *buf, int size, LinkLayerAddress *remote,
-	  EtherPort *port );
+	  CommonPort *port );
 };
 
 /*Exact fit. No padding*/
@@ -1231,7 +1087,7 @@ private:
 	int8_t targetPortIdentify;
 	SignallingTLV tlv;
 
-	PTPMessageSignalling(void);
+	PTPMessageSignalling(void) {}
 public:
 	static const int8_t sigMsgInterval_Initial =  126;
 	static const int8_t sigMsgInterval_NoSend =  127;
@@ -1274,9 +1130,9 @@ public:
 	 */
 	void processMessage( EtherPort *port );
 
-	friend PTPMessageCommon *buildPTPMessage
+	friend PTPMessageCommon *buildPTPMessageCommon
 	( char *buf, int size, LinkLayerAddress *remote,
-	  EtherPort * port);
+	  CommonPort * port);
 };
 
 #endif

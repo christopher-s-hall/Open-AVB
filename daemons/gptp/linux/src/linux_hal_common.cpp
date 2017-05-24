@@ -64,17 +64,9 @@
 
 Timestamp tsToTimestamp(struct timespec *ts)
 {
-	Timestamp ret;
-	int seclen = sizeof(ts->tv_sec) - sizeof(ret.seconds_ls);
-	if (seclen > 0) {
-		ret.seconds_ms =
-		    ts->tv_sec >> (sizeof(ts->tv_sec) - seclen) * 8;
-		ret.seconds_ls = ts->tv_sec & 0xFFFFFFFF;
-	} else {
-		ret.seconds_ms = 0;
-		ret.seconds_ls = ts->tv_sec;
-	}
-	ret.nanoseconds = ts->tv_nsec;
+	Timestamp ret
+		( ts->tv_nsec, ts->tv_sec & 0xFFFFFFFF, ts->tv_sec >> 32 );
+
 	return ret;
 }
 

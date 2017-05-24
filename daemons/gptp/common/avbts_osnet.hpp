@@ -43,6 +43,7 @@
 /**@file*/
 
 class CommonTimestamper;
+class CommonPort;
 
 #define FACTORY_NAME_LENGTH 48		/*!< Factory name maximum length */
 #define DEFAULT_TIMEOUT 1			/*!< Default timeout in milliseconds*/

@@ -32,7 +32,6 @@
 ******************************************************************************/
 
 #include <ieee1588.hpp>
-#include <avbts_clock.hpp>
 #include <avbts_message.hpp>
 #include <ether_port.hpp>
 #include <avbts_ostimer.hpp>
@@ -49,11 +48,10 @@ PTPMessageCommon::PTPMessageCommon( CommonPort *port )
 	versionNetwork = PTP_NETWORK_VERSION;
 	domainNumber = port->getClock()->getDomain();
 	// Set flags as necessary
-	memset(flags, 0, PTP_FLAGS_LENGTH);
-	flags[PTP_PTPTIMESCALE_BYTE] |= (0x1 << PTP_PTPTIMESCALE_BIT);
+	memset( &flags, 0, sizeof( flags ));
+	flags.ptpTimescale = 0x1; // Reserved "TRUE"
 	correctionField = 0;
 	_gc = false;
-	sourcePortIdentity = new PortIdentity();
 
 	return;
 }
@@ -62,24 +60,152 @@ PTPMessageCommon::PTPMessageCommon( CommonPort *port )
    uuid, and port id fields */
 bool PTPMessageCommon::isSenderEqual(PortIdentity portIdentity)
 {
-	return portIdentity == *sourcePortIdentity;
+	return portIdentity == sourcePortIdentity;
 }
 
-PTPMessageCommon *buildPTPMessage
-( char *buf, int size, LinkLayerAddress *remote,
-  EtherPort *port )
+PTPMessageCommon *buildPTPMessageEvent
+( PTPMessageEvent *msg,  CommonPort *cport, char *buf, int size )
 {
-	OSTimer *timer = port->getTimerFactory()->createTimer();
-	PTPMessageCommon *msg = NULL;
-	PTPMessageId messageId;
-	MessageType messageType;
-	unsigned char tspec_msg_t = 0;
-	unsigned char transportSpecific = 0;
+	int iter = 5;
+	long req = 4000;	// = 1 ms
+	int ts_good;
 
-	uint16_t sequenceId;
-	PortIdentity *sourcePortIdentity;
-	Timestamp timestamp(0, 0, 0);
+	PTPMessageId messageId;
+	Timestamp timestamp;
 	unsigned counter_value = 0;
+	OSTimer *timer;
+
+	EtherPort *port = dynamic_cast<decltype(port)>(cport);
+	if( port == NULL )
+	{
+		GPTP_LOG_ERROR( "Received event message on port that doesn't "
+				"support it" );
+		return NULL;
+	}
+
+	messageId.setMessageType(msg->messageType);
+	messageId.setSequenceId(msg->sequenceId);
+
+	GPTP_LOG_VERBOSE("Timestamping event packet");
+	timer = port->getTimerFactory()->createTimer();
+	ts_good = port->getRxTimestamp( &msg->sourcePortIdentity, messageId,
+					timestamp, counter_value, false );
+	while (ts_good != GPTP_EC_SUCCESS && iter-- != 0) {
+		// Waits at least 1 time slice regardless of size of 'req'
+		timer->sleep(req);
+		if (ts_good != GPTP_EC_EAGAIN)
+			GPTP_LOG_ERROR(
+				"Error (RX) timestamping RX event packet "
+				"(Retrying), error=%d", ts_good );
+		ts_good = port->getRxTimestamp
+			( &msg->sourcePortIdentity, messageId, timestamp,
+			  counter_value, iter == 0 );
+		req *= 2;
+	}
+	delete timer;
+
+	if (ts_good != GPTP_EC_SUCCESS)
+	{
+		char err_msg[HWTIMESTAMPER_EXTENDED_MESSAGE_SIZE];
+		port->getExtendedError(err_msg);
+		GPTP_LOG_ERROR
+			("*** Received an event packet but cannot retrieve "
+			 "timestamp, discarding. messageType=%u,error=%d\n%s",
+			 msg->messageType, ts_good, msg);
+		goto abort;
+	}
+
+	msg->_timestamp = timestamp;
+	msg->_timestamp_counter_value = counter_value;
+
+	switch (msg->messageType) {
+	default:
+		GPTP_LOG_EXCEPTION( "Received unsupported event message "
+				    "type, %d", (int)msg->messageType );
+		port->incCounter_ieee8021AsPortStatRxPTPPacketDiscard();
+
+		goto abort;
+
+	case SYNC_MESSAGE:
+		GPTP_LOG_DEBUG("*** Received Sync message" );
+		GPTP_LOG_VERBOSE("Sync RX timestamp = %s",
+				 timestamp.toString().c_str());
+
+		// Be sure buffer is the correction size
+		if (size < PTP_COMMON_HDR_LENGTH + PTP_SYNC_LENGTH) {
+			GPTP_LOG_ERROR("Received wrong length sync message" );
+			goto abort;
+		}
+		{
+			auto sync_msg = new PTPMessageSync();
+			*((PTPMessageEvent *) sync_msg) = *msg;
+
+			msg = sync_msg;
+		}
+		break;
+
+	case PATH_DELAY_REQ_MESSAGE:
+		GPTP_LOG_DEBUG("*** Received PDelay Request message");
+
+		// Be sure buffer is the correction size
+		if (size < PTP_COMMON_HDR_LENGTH + PTP_PDELAY_REQ_LENGTH
+		    && /* For Broadcom compatibility */ size != 46) {
+			goto abort;
+		}
+		{
+			auto pdelay_req_msg =
+				new PTPMessagePathDelayReq();
+			*((PTPMessageEvent *) pdelay_req_msg) = *msg;
+
+			msg = pdelay_req_msg;
+		}
+		break;
+
+	case PATH_DELAY_RESP_MESSAGE:
+		GPTP_LOG_DEBUG
+			( "*** Received PDelay Response message, "
+			  "Timestamp %s, seqID %u",
+			  timestamp.toString().c_str(), msg->sequenceId );
+
+		// Be sure buffer is the correction size
+		if (size < PTP_COMMON_HDR_LENGTH + PTP_PDELAY_RESP_LENGTH) {
+			goto abort;
+		}
+		{
+			pdelay_resp_msg_t *fields = (decltype(fields))
+				(buf + PTP_PDELAY_RESP_OFFSET);
+			auto pdelay_resp_msg =
+				new PTPMessagePathDelayResp();
+			*((PTPMessageEvent *) pdelay_resp_msg) = *msg;
+
+			pdelay_resp_msg->requestReceiptTimestamp =
+				fields->requestReceiptTimestamp;
+			pdelay_resp_msg->requestReceiptTimestamp.ntoh();
+
+			pdelay_resp_msg->requestingPortIdentity =
+				fields->requestingPortIdentity;
+			pdelay_resp_msg->
+				requestingPortIdentity.ntoh();
+
+			msg = pdelay_resp_msg;
+		}
+		break;
+	}
+
+	msg->_gc = false;
+	return msg;
+
+abort:
+	return NULL;
+}
+
+PTPMessageCommon *buildPTPMessageCommon
+( char *buf, int size, LinkLayerAddress *remote,
+  CommonPort *port )
+{
+	PTPMessageCommon *msg = NULL;
+
+	common_header_t *header = (common_header_t *) buf;
 
 #if PTP_DEBUG
 	{
@@ -95,321 +221,86 @@ PTPMessageCommon *buildPTPMessage
 	}
 #endif
 
-	memcpy(&tspec_msg_t,
-	       buf + PTP_COMMON_HDR_TRANSSPEC_MSGTYPE(PTP_COMMON_HDR_OFFSET),
-	       sizeof(tspec_msg_t));
-	messageType = (MessageType) (tspec_msg_t & 0xF);
-	transportSpecific = (tspec_msg_t >> 4) & 0x0F;
+	msg = new PTPMessageCommon();
+	msg->messageType = (MessageType) header->messageType;
+	msg->sequenceId = PLAT_ntohs( header->sequenceId );
+	msg->sourcePortIdentity = header->sourcePortIdentity;
+	msg->sourcePortIdentity.ntoh();
+	msg->versionPTP = header->versionPTP;
+	msg->messageLength = PLAT_ntohs( header->messageLength );
+	msg->domainNumber = header->domainNumber;
+	msg->correctionField = PLAT_ntohll( header->correctionField );
+	msg->control = (LegacyMessageType) header->control;
 
-	sourcePortIdentity = new PortIdentity
-		((uint8_t *)
-		 (buf + PTP_COMMON_HDR_SOURCE_CLOCK_ID
-		  (PTP_COMMON_HDR_OFFSET)),
-		 (uint16_t *)
-		 (buf + PTP_COMMON_HDR_SOURCE_PORT_ID
-		  (PTP_COMMON_HDR_OFFSET)));
+	GPTP_LOG_VERBOSE("Captured Sequence Id: %u", msg->sequenceId);
 
-	memcpy
-		(&(sequenceId),
-		 buf + PTP_COMMON_HDR_SEQUENCE_ID(PTP_COMMON_HDR_OFFSET),
-		 sizeof(sequenceId));
-	sequenceId = PLAT_ntohs(sequenceId);
-
-	GPTP_LOG_VERBOSE("Captured Sequence Id: %u", sequenceId);
-	messageId.setMessageType(messageType);
-	messageId.setSequenceId(sequenceId);
-
-
-	if (!(messageType >> 3)) {
-		int iter = 5;
-		long req = 4000;	// = 1 ms
-		int ts_good =
-		    port->getRxTimestamp
-			(sourcePortIdentity, messageId, timestamp, counter_value, false);
-		while (ts_good != GPTP_EC_SUCCESS && iter-- != 0) {
-			// Waits at least 1 time slice regardless of size of 'req'
-			timer->sleep(req);
-			if (ts_good != GPTP_EC_EAGAIN)
-				GPTP_LOG_ERROR(
-					"Error (RX) timestamping RX event packet (Retrying), error=%d",
-					  ts_good );
-			ts_good =
-			    port->getRxTimestamp(sourcePortIdentity, messageId,
-						 timestamp, counter_value,
-						 iter == 0);
-			req *= 2;
-		}
-		if (ts_good != GPTP_EC_SUCCESS) {
-			char err_msg[HWTIMESTAMPER_EXTENDED_MESSAGE_SIZE];
-			port->getExtendedError(err_msg);
-			GPTP_LOG_ERROR
-			    ("*** Received an event packet but cannot retrieve timestamp, discarding. messageType=%u,error=%d\n%s",
-			     messageType, ts_good, msg);
-			//_exit(-1);
-			goto abort;
-		}
-
-		else {
-			GPTP_LOG_VERBOSE("Timestamping event packet");
-		}
-
-	}
-
-	if (1 != transportSpecific) {
-		GPTP_LOG_EXCEPTION("*** Received message with unsupported transportSpecific type=%d", transportSpecific);
+	if ( GPTP_TRANSPORT_SPECIFIC != header->transportSpecific ) {
+		GPTP_LOG_EXCEPTION
+			( "*** Received message with unsupported "
+			  "transportSpecific type=%d",
+			  header->transportSpecific );
 		goto abort;
 	}
- 
-	switch (messageType) {
-	case SYNC_MESSAGE:
 
-		GPTP_LOG_DEBUG("*** Received Sync message" );
-		GPTP_LOG_VERBOSE("Sync RX timestamp = %hu,%u,%u", timestamp.seconds_ms, timestamp.seconds_ls, timestamp.nanoseconds );
+	if( msg->isEvent() )
+	{
+		auto event_msg = new PTPMessageEvent();
+		*((PTPMessageCommon *) event_msg) = *msg;
 
-		// Be sure buffer is the correction size
-		if (size < PTP_COMMON_HDR_LENGTH + PTP_SYNC_LENGTH) {
-			goto abort;
-		}
-		{
-			PTPMessageSync *sync_msg = new PTPMessageSync();
-			sync_msg->messageType = messageType;
-			// Copy in v2 sync specific fields
-			memcpy(&(sync_msg->originTimestamp.seconds_ms),
-			       buf + PTP_SYNC_SEC_MS(PTP_SYNC_OFFSET),
-			       sizeof(sync_msg->originTimestamp.seconds_ms));
-			memcpy(&(sync_msg->originTimestamp.seconds_ls),
-			       buf + PTP_SYNC_SEC_LS(PTP_SYNC_OFFSET),
-			       sizeof(sync_msg->originTimestamp.seconds_ls));
-			memcpy(&(sync_msg->originTimestamp.nanoseconds),
-			       buf + PTP_SYNC_NSEC(PTP_SYNC_OFFSET),
-			       sizeof(sync_msg->originTimestamp.nanoseconds));
-			msg = sync_msg;
-		}
-		break;
+		return buildPTPMessageEvent( event_msg, port, buf, size );
+	}
+
+	switch (msg->messageType) {
 	case FOLLOWUP_MESSAGE:
 
 		GPTP_LOG_DEBUG("*** Received Follow Up message");
 
 		// Be sure buffer is the correction size
-		if (size < (int)(PTP_COMMON_HDR_LENGTH + PTP_FOLLOWUP_LENGTH + sizeof(FollowUpTLV))) {
+		if (size < (int)(PTP_COMMON_HDR_LENGTH + PTP_FOLLOWUP_LENGTH))
+		{
+			GPTP_LOG_ERROR( "Received wrong length followup "
+					"message" );
 			goto abort;
 		}
 		{
-			PTPMessageFollowUp *followup_msg =
-			    new PTPMessageFollowUp();
-			followup_msg->messageType = messageType;
-			// Copy in v2 sync specific fields
-			memcpy(&
-			       (followup_msg->
-				preciseOriginTimestamp.seconds_ms),
-			       buf + PTP_FOLLOWUP_SEC_MS(PTP_FOLLOWUP_OFFSET),
-			       sizeof(followup_msg->
-				      preciseOriginTimestamp.seconds_ms));
-			memcpy(&
-			       (followup_msg->
-				preciseOriginTimestamp.seconds_ls),
-			       buf + PTP_FOLLOWUP_SEC_LS(PTP_FOLLOWUP_OFFSET),
-			       sizeof(followup_msg->
-				      preciseOriginTimestamp.seconds_ls));
-			memcpy(&
-			       (followup_msg->
-				preciseOriginTimestamp.nanoseconds),
-			       buf + PTP_FOLLOWUP_NSEC(PTP_FOLLOWUP_OFFSET),
-			       sizeof(followup_msg->
-				      preciseOriginTimestamp.nanoseconds));
+			followup_msg_t *fields = (decltype(fields))
+				(buf + PTP_FOLLOWUP_OFFSET);
+			auto followup_msg = new PTPMessageFollowUp();
+			*((PTPMessageCommon *) followup_msg) = *msg;
 
-			followup_msg->preciseOriginTimestamp.seconds_ms =
-			    PLAT_ntohs(followup_msg->
-				       preciseOriginTimestamp.seconds_ms);
-			followup_msg->preciseOriginTimestamp.seconds_ls =
-			    PLAT_ntohl(followup_msg->
-				       preciseOriginTimestamp.seconds_ls);
-			followup_msg->preciseOriginTimestamp.nanoseconds =
-			    PLAT_ntohl(followup_msg->
-				       preciseOriginTimestamp.nanoseconds);
-
-			memcpy( &(followup_msg->tlv),
-				buf+PTP_FOLLOWUP_OFFSET+PTP_FOLLOWUP_LENGTH,
-				sizeof(followup_msg->tlv) );
+			followup_msg->preciseOriginTimestamp =
+				fields->preciseOriginTimestamp;
+			followup_msg->preciseOriginTimestamp.ntoh();
+			followup_msg->tlv = fields->tlv;
 
 			msg = followup_msg;
-        }
-
-		break;
-	case PATH_DELAY_REQ_MESSAGE:
-
-		GPTP_LOG_DEBUG("*** Received PDelay Request message");
-
-		// Be sure buffer is the correction size
-		if (size < PTP_COMMON_HDR_LENGTH + PTP_PDELAY_REQ_LENGTH
-		    && /* For Broadcom compatibility */ size != 46) {
-			goto abort;
 		}
-		{
-			PTPMessagePathDelayReq *pdelay_req_msg =
-			    new PTPMessagePathDelayReq();
-			pdelay_req_msg->messageType = messageType;
 
-#if 0
-            /*TODO: Do we need the code below? Can we remove it?*/
-			// The origin timestamp for PDelay Request packets has been eliminated since it is unused
-			// Copy in v2 PDelay Request specific fields
-			memcpy(&(pdelay_req_msg->originTimestamp.seconds_ms),
-			       buf +
-			       PTP_PDELAY_REQ_SEC_MS(PTP_PDELAY_REQ_OFFSET),
-			       sizeof(pdelay_req_msg->
-				      originTimestamp.seconds_ms));
-			memcpy(&(pdelay_req_msg->originTimestamp.seconds_ls),
-			       buf +
-			       PTP_PDELAY_REQ_SEC_LS(PTP_PDELAY_REQ_OFFSET),
-			       sizeof(pdelay_req_msg->
-				      originTimestamp.seconds_ls));
-			memcpy(&(pdelay_req_msg->originTimestamp.nanoseconds),
-			       buf + PTP_PDELAY_REQ_NSEC(PTP_PDELAY_REQ_OFFSET),
-			       sizeof(pdelay_req_msg->
-				      originTimestamp.nanoseconds));
-
-			pdelay_req_msg->originTimestamp.seconds_ms =
-			    PLAT_ntohs(pdelay_req_msg->
-				       originTimestamp.seconds_ms);
-			pdelay_req_msg->originTimestamp.seconds_ls =
-			    PLAT_ntohl(pdelay_req_msg->
-				       originTimestamp.seconds_ls);
-			pdelay_req_msg->originTimestamp.nanoseconds =
-			    PLAT_ntohl(pdelay_req_msg->
-				       originTimestamp.nanoseconds);
-#endif
-
-			msg = pdelay_req_msg;
-		}
-		break;
-	case PATH_DELAY_RESP_MESSAGE:
-
-		GPTP_LOG_DEBUG("*** Received PDelay Response message, Timestamp %u (sec) %u (ns), seqID %u",
-			   timestamp.seconds_ls, timestamp.nanoseconds,
-			   sequenceId);
-
-		// Be sure buffer is the correction size
-		if (size < PTP_COMMON_HDR_LENGTH + PTP_PDELAY_RESP_LENGTH) {
-			goto abort;
-		}
-		{
-			PTPMessagePathDelayResp *pdelay_resp_msg =
-			    new PTPMessagePathDelayResp();
-			pdelay_resp_msg->messageType = messageType;
-			// Copy in v2 PDelay Response specific fields
-			pdelay_resp_msg->requestingPortIdentity =
-			    new PortIdentity((uint8_t *) buf +
-					     PTP_PDELAY_RESP_REQ_CLOCK_ID
-					     (PTP_PDELAY_RESP_OFFSET),
-					     (uint16_t *) (buf +
-							   PTP_PDELAY_RESP_REQ_PORT_ID
-							   (PTP_PDELAY_RESP_OFFSET)));
-
-#ifdef DEBUG
-			for (int n = 0; n < PTP_CLOCK_IDENTITY_LENGTH; ++n) {	// MMM
-				GPTP_LOG_VERBOSE("%c",
-					pdelay_resp_msg->
-					requestingPortIdentity.clockIdentity
-					[n]);
-			}
-#endif
-
-			memcpy(& (pdelay_resp_msg->requestReceiptTimestamp.seconds_ms),
-			       buf + PTP_PDELAY_RESP_SEC_MS(PTP_PDELAY_RESP_OFFSET),
-			       sizeof
-				   (pdelay_resp_msg->requestReceiptTimestamp.seconds_ms));
-			memcpy(&
-			       (pdelay_resp_msg->
-				requestReceiptTimestamp.seconds_ls),
-			       buf +
-			       PTP_PDELAY_RESP_SEC_LS(PTP_PDELAY_RESP_OFFSET),
-			       sizeof(pdelay_resp_msg->
-				      requestReceiptTimestamp.seconds_ls));
-			memcpy(&
-			       (pdelay_resp_msg->
-				requestReceiptTimestamp.nanoseconds),
-			       buf +
-			       PTP_PDELAY_RESP_NSEC(PTP_PDELAY_RESP_OFFSET),
-			       sizeof(pdelay_resp_msg->
-				      requestReceiptTimestamp.nanoseconds));
-
-			pdelay_resp_msg->requestReceiptTimestamp.seconds_ms =
-			    PLAT_ntohs(pdelay_resp_msg->requestReceiptTimestamp.seconds_ms);
-			pdelay_resp_msg->requestReceiptTimestamp.seconds_ls =
-			    PLAT_ntohl(pdelay_resp_msg->requestReceiptTimestamp.seconds_ls);
-			pdelay_resp_msg->requestReceiptTimestamp.nanoseconds =
-			    PLAT_ntohl(pdelay_resp_msg->requestReceiptTimestamp.nanoseconds);
-
-			msg = pdelay_resp_msg;
-		}
 		break;
 	case PATH_DELAY_FOLLOWUP_MESSAGE:
 
 		GPTP_LOG_DEBUG("*** Received PDelay Response FollowUp message");
 
 		// Be sure buffer is the correction size
-//     if( size < PTP_COMMON_HDR_LENGTH + PTP_PDELAY_FOLLOWUP_LENGTH ) {
+//     if( size < PTP_COMMON_HDR_LENGTH + PTP_PDELAY_FWUP_LENGTH ) {
 //       goto abort;
 //     }
 		{
-			PTPMessagePathDelayRespFollowUp *pdelay_resp_fwup_msg =
+			pdelay_fwup_msg_t *fields = (decltype(fields))
+				(buf + PTP_PDELAY_FWUP_OFFSET);
+			auto pdelay_fwup_msg =
 			    new PTPMessagePathDelayRespFollowUp();
-			pdelay_resp_fwup_msg->messageType = messageType;
+			*((PTPMessageCommon *) pdelay_fwup_msg) = *msg;
 			// Copy in v2 PDelay Response specific fields
-			pdelay_resp_fwup_msg->requestingPortIdentity =
-			    new PortIdentity((uint8_t *) buf +
-					     PTP_PDELAY_FOLLOWUP_REQ_CLOCK_ID
-					     (PTP_PDELAY_RESP_OFFSET),
-					     (uint16_t *) (buf +
-							   PTP_PDELAY_FOLLOWUP_REQ_PORT_ID
-							   (PTP_PDELAY_FOLLOWUP_OFFSET)));
+			pdelay_fwup_msg->responseOriginTimestamp =
+				fields->responseOriginTimestamp;
+			pdelay_fwup_msg->responseOriginTimestamp.ntoh();
+			pdelay_fwup_msg->requestingPortIdentity =
+				fields->requestingPortIdentity;
+			pdelay_fwup_msg->
+				requestingPortIdentity.ntoh();
 
-			memcpy(&
-			       (pdelay_resp_fwup_msg->
-				responseOriginTimestamp.seconds_ms),
-			       buf +
-			       PTP_PDELAY_FOLLOWUP_SEC_MS
-			       (PTP_PDELAY_FOLLOWUP_OFFSET),
-			       sizeof
-			       (pdelay_resp_fwup_msg->responseOriginTimestamp.
-				seconds_ms));
-			memcpy(&
-			       (pdelay_resp_fwup_msg->
-				responseOriginTimestamp.seconds_ls),
-			       buf +
-			       PTP_PDELAY_FOLLOWUP_SEC_LS
-			       (PTP_PDELAY_FOLLOWUP_OFFSET),
-			       sizeof
-			       (pdelay_resp_fwup_msg->responseOriginTimestamp.
-				seconds_ls));
-			memcpy(&
-			       (pdelay_resp_fwup_msg->
-				responseOriginTimestamp.nanoseconds),
-			       buf +
-			       PTP_PDELAY_FOLLOWUP_NSEC
-			       (PTP_PDELAY_FOLLOWUP_OFFSET),
-			       sizeof
-			       (pdelay_resp_fwup_msg->responseOriginTimestamp.
-				nanoseconds));
-
-			pdelay_resp_fwup_msg->
-			    responseOriginTimestamp.seconds_ms =
-			    PLAT_ntohs
-			    (pdelay_resp_fwup_msg->responseOriginTimestamp.
-			     seconds_ms);
-			pdelay_resp_fwup_msg->
-			    responseOriginTimestamp.seconds_ls =
-			    PLAT_ntohl
-			    (pdelay_resp_fwup_msg->responseOriginTimestamp.
-			     seconds_ls);
-			pdelay_resp_fwup_msg->
-			    responseOriginTimestamp.nanoseconds =
-			    PLAT_ntohl
-			    (pdelay_resp_fwup_msg->responseOriginTimestamp.
-			     nanoseconds);
-
-			msg = pdelay_resp_fwup_msg;
+			msg = pdelay_fwup_msg;
 		}
 		break;
 	case ANNOUNCE_MESSAGE:
@@ -417,51 +308,27 @@ PTPMessageCommon *buildPTPMessage
 		GPTP_LOG_VERBOSE("*** Received Announce message");
 
 		{
-			PTPMessageAnnounce *annc = new PTPMessageAnnounce();
-			annc->messageType = messageType;
-			int tlv_length = size - PTP_COMMON_HDR_LENGTH + PTP_ANNOUNCE_LENGTH;
+			announce_msg_t *fields = (decltype(fields))
+				(buf + PTP_ANNOUNCE_OFFSET);
+			auto annc = new PTPMessageAnnounce();
+			*((PTPMessageCommon *) annc) = *msg;
+			int tlv_length = size -
+				(PTP_COMMON_HDR_LENGTH + PTP_ANNOUNCE_LENGTH);
 
-			memcpy(&(annc->currentUtcOffset),
-			       buf +
-			       PTP_ANNOUNCE_CURRENT_UTC_OFFSET
-			       (PTP_ANNOUNCE_OFFSET),
-			       sizeof(annc->currentUtcOffset));
 			annc->currentUtcOffset =
-			    PLAT_ntohs(annc->currentUtcOffset);
-			memcpy(&(annc->grandmasterPriority1),
-			       buf +
-			       PTP_ANNOUNCE_GRANDMASTER_PRIORITY1
-			       (PTP_ANNOUNCE_OFFSET),
-			       sizeof(annc->grandmasterPriority1));
-			memcpy( annc->grandmasterClockQuality,
-				buf+
-				PTP_ANNOUNCE_GRANDMASTER_CLOCK_QUALITY
-				(PTP_ANNOUNCE_OFFSET),
-				sizeof( *annc->grandmasterClockQuality ));
-			annc->
-			  grandmasterClockQuality->offsetScaledLogVariance =
-			  PLAT_ntohs
-			  ( annc->grandmasterClockQuality->
-			    offsetScaledLogVariance );
-			memcpy(&(annc->grandmasterPriority2),
-			       buf +
-			       PTP_ANNOUNCE_GRANDMASTER_PRIORITY2
-			       (PTP_ANNOUNCE_OFFSET),
-			       sizeof(annc->grandmasterPriority2));
-			memcpy(&(annc->grandmasterIdentity),
-			       buf +
-			       PTP_ANNOUNCE_GRANDMASTER_IDENTITY
-			       (PTP_ANNOUNCE_OFFSET),
-			       PTP_CLOCK_IDENTITY_LENGTH);
-			memcpy(&(annc->stepsRemoved),
-			       buf +
-			       PTP_ANNOUNCE_STEPS_REMOVED(PTP_ANNOUNCE_OFFSET),
-			       sizeof(annc->stepsRemoved));
-			annc->stepsRemoved = PLAT_ntohs(annc->stepsRemoved);
-			memcpy(&(annc->timeSource),
-			       buf +
-			       PTP_ANNOUNCE_TIME_SOURCE(PTP_ANNOUNCE_OFFSET),
-			       sizeof(annc->timeSource));
+				PLAT_ntohs( fields->currentUtcOffset );
+			annc->grandmasterPriority1 =
+				fields->grandmasterPriority1;
+			annc->grandmasterClockQuality =
+				fields->grandmasterClockQuality;
+			annc->grandmasterClockQuality.ntoh();
+			annc->grandmasterPriority2 =
+				fields->grandmasterPriority2;
+			annc->grandmasterIdentity =
+				fields->grandmasterIdentity;
+			annc->stepsRemoved =
+				PLAT_ntohs( fields->stepsRemoved );
+			annc->timeSource = fields->timeSource;
 
 			// Parse TLV if it exists
 			buf += PTP_COMMON_HDR_LENGTH + PTP_ANNOUNCE_LENGTH;
@@ -477,9 +344,8 @@ PTPMessageCommon *buildPTPMessage
 
 	case SIGNALLING_MESSAGE:
 		{
-			PTPMessageSignalling *signallingMsg = new PTPMessageSignalling();
-			signallingMsg->messageType = messageType;
-
+			auto signallingMsg = new PTPMessageSignalling();
+			*((PTPMessageCommon *) signallingMsg) = *msg;
 			memcpy(&(signallingMsg->targetPortIdentify),
 			       buf + PTP_SIGNALLING_TARGET_PORT_IDENTITY(PTP_SIGNALLING_OFFSET),
 			       sizeof(signallingMsg->targetPortIdentify));
@@ -493,7 +359,7 @@ PTPMessageCommon *buildPTPMessage
 	default:
 
 		GPTP_LOG_EXCEPTION("Received unsupported message type, %d",
-		            (int)messageType);
+		            (int)msg->messageType);
 		port->incCounter_ieee8021AsPortStatRxPTPPacketDiscard();
 
 		goto abort;
@@ -501,49 +367,14 @@ PTPMessageCommon *buildPTPMessage
 
 	msg->_gc = false;
 
-	// Copy in common header fields
-	memcpy(&(msg->versionPTP),
-	       buf + PTP_COMMON_HDR_PTP_VERSION(PTP_COMMON_HDR_OFFSET),
-	       sizeof(msg->versionPTP));
-	memcpy(&(msg->messageLength),
-	       buf + PTP_COMMON_HDR_MSG_LENGTH(PTP_COMMON_HDR_OFFSET),
-	       sizeof(msg->messageLength));
-	msg->messageLength = PLAT_ntohs(msg->messageLength);
-	memcpy(&(msg->domainNumber),
-	       buf + PTP_COMMON_HDR_DOMAIN_NUMBER(PTP_COMMON_HDR_OFFSET),
-	       sizeof(msg->domainNumber));
-	memcpy(&(msg->flags), buf + PTP_COMMON_HDR_FLAGS(PTP_COMMON_HDR_OFFSET),
-	       PTP_FLAGS_LENGTH);
-	memcpy(&(msg->correctionField),
-	       buf + PTP_COMMON_HDR_CORRECTION(PTP_COMMON_HDR_OFFSET),
-	       sizeof(msg->correctionField));
-	msg->correctionField = PLAT_ntohll(msg->correctionField);
-	msg->sourcePortIdentity = sourcePortIdentity;
-	msg->sequenceId = sequenceId;
-	memcpy(&(msg->control),
-	       buf + PTP_COMMON_HDR_CONTROL(PTP_COMMON_HDR_OFFSET),
-	       sizeof(msg->control));
-	memcpy(&(msg->logMeanMessageInterval),
-	       buf + PTP_COMMON_HDR_LOG_MSG_INTRVL(PTP_COMMON_HDR_OFFSET),
-	       sizeof(msg->logMeanMessageInterval));
-
-	port->addSockAddrMap(msg->sourcePortIdentity, remote);
-
-	msg->_timestamp = timestamp;
-	msg->_timestamp_counter_value = counter_value;
-
-	delete timer;
-
 	return msg;
 
 abort:
-	delete sourcePortIdentity;
-	delete timer;
 
 	return NULL;
 }
 
-bool PTPMessageCommon::getTxTimestamp( EtherPort *port, uint32_t link_speed )
+bool PTPMessageEvent::getTxTimestamp( EtherPort *port, uint32_t link_speed )
 {
 	OSTimer *timer = port->getTimerFactory()->createTimer();
 	int ts_good;
@@ -571,7 +402,7 @@ bool PTPMessageCommon::getTxTimestamp( EtherPort *port, uint32_t link_speed )
 		Timestamp phy_compensation = port->getTxPhyDelay( link_speed );
 		GPTP_LOG_DEBUG( "TX PHY compensation: %s sec",
 				phy_compensation.toString().c_str() );
-		phy_compensation._version = tx_timestamp._version;
+		phy_compensation.setVersion( tx_timestamp.getVersion() );
 		_timestamp = tx_timestamp + phy_compensation;
 	} else
 	{
@@ -595,71 +426,35 @@ void PTPMessageCommon::processMessage( EtherPort *port )
 
 void PTPMessageCommon::buildCommonHeader(uint8_t * buf)
 {
-	unsigned char tspec_msg_t;
-    /*TODO: Message type assumes value sbetween 0x0 and 0xD (its an enumeration).
-     * So I am not sure why we are adding 0x10 to it
-     */
-	tspec_msg_t = messageType | 0x10;
-	long long correctionField_BE = PLAT_htonll(correctionField);
-	uint16_t messageLength_NO = PLAT_htons(messageLength);
+	common_header_t *hdr = (decltype(hdr)) buf;
 
-	memcpy(buf + PTP_COMMON_HDR_TRANSSPEC_MSGTYPE(PTP_COMMON_HDR_OFFSET),
-	       &tspec_msg_t, sizeof(tspec_msg_t));
-	memcpy(buf + PTP_COMMON_HDR_PTP_VERSION(PTP_COMMON_HDR_OFFSET),
-	       &versionPTP, sizeof(versionPTP));
-	memcpy(buf + PTP_COMMON_HDR_MSG_LENGTH(PTP_COMMON_HDR_OFFSET),
-	       &messageLength_NO, sizeof(messageLength_NO));
-	memcpy(buf + PTP_COMMON_HDR_DOMAIN_NUMBER(PTP_COMMON_HDR_OFFSET),
-	       &domainNumber, sizeof(domainNumber));
-	memcpy(buf + PTP_COMMON_HDR_FLAGS(PTP_COMMON_HDR_OFFSET), &flags,
-	       PTP_FLAGS_LENGTH);
-	memcpy(buf + PTP_COMMON_HDR_CORRECTION(PTP_COMMON_HDR_OFFSET),
-	       &correctionField_BE, sizeof(correctionField));
-
-	sourcePortIdentity->getClockIdentityString
-	  ((uint8_t *) buf+
-	   PTP_COMMON_HDR_SOURCE_CLOCK_ID(PTP_COMMON_HDR_OFFSET));
-	sourcePortIdentity->getPortNumberNO
-	  ((uint16_t *) (buf + PTP_COMMON_HDR_SOURCE_PORT_ID
-			 (PTP_COMMON_HDR_OFFSET)));
+	memset( hdr, 0, sizeof( *hdr ));
+	hdr->messageType = messageType;
+	hdr->transportSpecific = GPTP_TRANSPORT_SPECIFIC;
+	hdr->versionPTP = versionPTP;
+	hdr->messageLength = PLAT_htons(messageLength);
+	hdr->domainNumber = domainNumber;
+	hdr->flags = flags;
+	hdr->correctionField = PLAT_htonll(correctionField);
+	hdr->sourcePortIdentity = sourcePortIdentity;
+	hdr->sourcePortIdentity.hton();
 
 	GPTP_LOG_VERBOSE("Sending Sequence Id: %u", sequenceId);
-	sequenceId = PLAT_htons(sequenceId);
-	memcpy(buf + PTP_COMMON_HDR_SEQUENCE_ID(PTP_COMMON_HDR_OFFSET),
-	       &sequenceId, sizeof(sequenceId));
-	sequenceId = PLAT_ntohs(sequenceId);
-	memcpy(buf + PTP_COMMON_HDR_CONTROL(PTP_COMMON_HDR_OFFSET), &control,
-	       sizeof(control));
-	memcpy(buf + PTP_COMMON_HDR_LOG_MSG_INTRVL(PTP_COMMON_HDR_OFFSET),
-	       &logMeanMessageInterval, sizeof(logMeanMessageInterval));
+	hdr->sequenceId = PLAT_htons( sequenceId );
+	hdr->control = control;
+	hdr->logMessageInterval = logMeanMessageInterval;
 
 	return;
 }
 
 void PTPMessageCommon::getPortIdentity(PortIdentity * identity)
 {
-	*identity = *sourcePortIdentity;
+	*identity = sourcePortIdentity;
 }
 
 void PTPMessageCommon::setPortIdentity(PortIdentity * identity)
 {
-	*sourcePortIdentity = *identity;
-}
-
-PTPMessageCommon::~PTPMessageCommon(void)
-{
-	delete sourcePortIdentity;
-	return;
-}
-
-PTPMessageAnnounce::PTPMessageAnnounce(void)
-{
-	grandmasterClockQuality = new ClockQuality();
-}
-
-PTPMessageAnnounce::~PTPMessageAnnounce(void)
-{
-	delete grandmasterClockQuality;
+	sourcePortIdentity = *identity;
 }
 
 bool PTPMessageAnnounce::isBetterThan(PTPMessageAnnounce * msg)
@@ -671,13 +466,13 @@ bool PTPMessageAnnounce::isBetterThan(PTPMessageAnnounce * msg)
 	this1[0] = grandmasterPriority1;
 	that1[0] = msg->getGrandmasterPriority1();
 
-	this1[1] = grandmasterClockQuality->cq_class;
+	this1[1] = grandmasterClockQuality.cq_class;
 	that1[1] = msg->getGrandmasterClockQuality()->cq_class;
 
-	this1[2] = grandmasterClockQuality->clockAccuracy;
+	this1[2] = grandmasterClockQuality.clockAccuracy;
 	that1[2] = msg->getGrandmasterClockQuality()->clockAccuracy;
 
-	tmp = grandmasterClockQuality->offsetScaledLogVariance;
+	tmp = grandmasterClockQuality.offsetScaledLogVariance;
 	tmp = PLAT_htons(tmp);
 	memcpy(this1 + 3, &tmp, sizeof(tmp));
 	tmp = msg->getGrandmasterClockQuality()->offsetScaledLogVariance;
@@ -687,8 +482,8 @@ bool PTPMessageAnnounce::isBetterThan(PTPMessageAnnounce * msg)
 	this1[5] = grandmasterPriority2;
 	that1[5] = msg->getGrandmasterPriority2();
 
-	this->getGrandmasterIdentity((char *)this1 + 6);
-	msg->getGrandmasterIdentity((char *)that1 + 6);
+	this->getGrandmasterIdentity(this1 + 6);
+	msg->getGrandmasterIdentity(that1 + 6);
 
 #if 0
 	GPTP_LOG_VERBOSE("Us: ");
@@ -705,21 +500,14 @@ bool PTPMessageAnnounce::isBetterThan(PTPMessageAnnounce * msg)
 }
 
 
-PTPMessageSync::PTPMessageSync() {
-}
-
-PTPMessageSync::~PTPMessageSync() {
-}
-
 PTPMessageSync::PTPMessageSync( EtherPort *port ) :
-	PTPMessageCommon( port )
+	PTPMessageEvent( port )
 {
 	messageType = SYNC_MESSAGE;	// This is an event message
 	sequenceId = port->getNextSyncSequenceId();
 	control = SYNC;
 
-	flags[PTP_ASSIST_BYTE] |= (0x1 << PTP_ASSIST_BIT);
-
+	flags.twoStepFlag = 0x1;
 	originTimestamp = port->getClock()->getTime();
 
 	logMeanMessageInterval = port->getSyncInterval();
@@ -731,32 +519,13 @@ bool PTPMessageSync::sendPort
 {
 	uint8_t buf_t[256];
 	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
-	unsigned char tspec_msg_t = 0x0;
-	Timestamp originTimestamp_BE;
 	uint32_t link_speed;
 
 	memset(buf_t, 0, 256);
 	// Create packet in buf
 	// Copy in common header
 	messageLength = PTP_COMMON_HDR_LENGTH + PTP_SYNC_LENGTH;
-	tspec_msg_t |= messageType & 0xF;
 	buildCommonHeader(buf_ptr);
-	// Get timestamp
-	originTimestamp = port->getClock()->getTime();
-	originTimestamp_BE.seconds_ms = PLAT_htons(originTimestamp.seconds_ms);
-	originTimestamp_BE.seconds_ls = PLAT_htonl(originTimestamp.seconds_ls);
-	originTimestamp_BE.nanoseconds =
-	    PLAT_htonl(originTimestamp.nanoseconds);
-	// Copy in v2 sync specific fields
-	memcpy(buf_ptr + PTP_SYNC_SEC_MS(PTP_SYNC_OFFSET),
-	       &(originTimestamp_BE.seconds_ms),
-	       sizeof(originTimestamp.seconds_ms));
-	memcpy(buf_ptr + PTP_SYNC_SEC_LS(PTP_SYNC_OFFSET),
-	       &(originTimestamp_BE.seconds_ls),
-	       sizeof(originTimestamp.seconds_ls));
-	memcpy(buf_ptr + PTP_SYNC_NSEC(PTP_SYNC_OFFSET),
-	       &(originTimestamp_BE.nanoseconds),
-	       sizeof(originTimestamp.nanoseconds));
 
 	port->sendEventPort
 		( PTP_ETHERTYPE, buf_t, messageLength, MCAST_OTHER,
@@ -773,7 +542,6 @@ PTPMessageAnnounce::PTPMessageAnnounce( CommonPort *port ) :
 	sequenceId = port->getNextAnnounceSequenceId();
 	ClockIdentity id;
 	control = MESSAGE_OTHER;
-	ClockIdentity clock_identity;
 
 	id = port->getClock()->getClockIdentity();
 	tlv.appendClockIdentity(&id);
@@ -781,12 +549,10 @@ PTPMessageAnnounce::PTPMessageAnnounce( CommonPort *port ) :
 	currentUtcOffset = port->getClock()->getCurrentUtcOffset();
 	grandmasterPriority1 = port->getClock()->getPriority1();
 	grandmasterPriority2 = port->getClock()->getPriority2();
-	grandmasterClockQuality = new ClockQuality();
-	*grandmasterClockQuality = port->getClock()->getClockQuality();
+	grandmasterClockQuality = port->getClock()->getClockQuality();
 	stepsRemoved = 0;
 	timeSource = port->getClock()->getTimeSource();
-	clock_identity = port->getClock()->getGrandmasterClockIdentity();
-	clock_identity.getIdentityString(grandmasterIdentity);
+	grandmasterIdentity = port->getClock()->getGrandmasterClockIdentity();
 
 	logMeanMessageInterval = port->getAnnounceInterval();
 	return;
@@ -797,39 +563,23 @@ bool PTPMessageAnnounce::sendPort
 {
 	uint8_t buf_t[256];
 	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
-	unsigned char tspec_msg_t = 0x0;
-
-	uint16_t currentUtcOffset_l = PLAT_htons(currentUtcOffset);
-	uint16_t stepsRemoved_l = PLAT_htons(stepsRemoved);
-	ClockQuality clockQuality_l = *grandmasterClockQuality;
-	clockQuality_l.offsetScaledLogVariance =
-	    PLAT_htons(clockQuality_l.offsetScaledLogVariance);
+	announce_msg_t *msg = (decltype(msg))
+		(buf_ptr + PTP_ANNOUNCE_OFFSET);
 
 	memset(buf_t, 0, 256);
 	// Create packet in buf
 	// Copy in common header
 	messageLength =
 		PTP_COMMON_HDR_LENGTH + PTP_ANNOUNCE_LENGTH + tlv.length();
-	tspec_msg_t |= messageType & 0xF;
 	buildCommonHeader(buf_ptr);
-	memcpy(buf_ptr + PTP_ANNOUNCE_CURRENT_UTC_OFFSET(PTP_ANNOUNCE_OFFSET),
-	       &currentUtcOffset_l, sizeof(currentUtcOffset));
-	memcpy(buf_ptr +
-	       PTP_ANNOUNCE_GRANDMASTER_PRIORITY1(PTP_ANNOUNCE_OFFSET),
-	       &grandmasterPriority1, sizeof(grandmasterPriority1));
-	memcpy(buf_ptr +
-	       PTP_ANNOUNCE_GRANDMASTER_CLOCK_QUALITY(PTP_ANNOUNCE_OFFSET),
-	       &clockQuality_l, sizeof(clockQuality_l));
-	memcpy(buf_ptr +
-	       PTP_ANNOUNCE_GRANDMASTER_PRIORITY2(PTP_ANNOUNCE_OFFSET),
-	       &grandmasterPriority2, sizeof(grandmasterPriority2));
-	memcpy( buf_ptr+
-		PTP_ANNOUNCE_GRANDMASTER_IDENTITY(PTP_ANNOUNCE_OFFSET),
-		grandmasterIdentity, PTP_CLOCK_IDENTITY_LENGTH );
-	memcpy(buf_ptr + PTP_ANNOUNCE_STEPS_REMOVED(PTP_ANNOUNCE_OFFSET),
-	       &stepsRemoved_l, sizeof(stepsRemoved));
-	memcpy(buf_ptr + PTP_ANNOUNCE_TIME_SOURCE(PTP_ANNOUNCE_OFFSET),
-	       &timeSource, sizeof(timeSource));
+	msg->currentUtcOffset = PLAT_htons( currentUtcOffset );
+	msg->grandmasterPriority1 = grandmasterPriority1;
+	msg->grandmasterClockQuality = grandmasterClockQuality;
+	msg->grandmasterClockQuality.hton();
+	msg->grandmasterPriority2 = grandmasterPriority2;
+	msg->grandmasterIdentity = grandmasterIdentity;
+	msg->stepsRemoved = PLAT_htons( stepsRemoved );
+	msg->timeSource = timeSource;
 	tlv.toByteString(buf_ptr + PTP_COMMON_HDR_LENGTH + PTP_ANNOUNCE_LENGTH);
 
 	port->sendGeneralPort(PTP_ETHERTYPE, buf_t, messageLength, MCAST_OTHER, destIdentity);
@@ -852,7 +602,7 @@ void PTPMessageAnnounce::processMessage( EtherPort *port )
 
 	// Reject Announce message from myself
 	my_clock_identity = port->getClock()->getClockIdentity();
-	if( sourcePortIdentity->getClockIdentity() == my_clock_identity ) {
+	if( sourcePortIdentity.getClockIdentity() == my_clock_identity ) {
 		goto bail;
 	}
 
@@ -890,7 +640,8 @@ void PTPMessageSync::processMessage( EtherPort *port )
 	port->incCounter_ieee8021AsPortStatRxSyncCount();
 
 #if CHECK_ASSIST_BIT
-	if( flags[PTP_ASSIST_BYTE] & (0x1<<PTP_ASSIST_BIT)) {
+	if( flags.twoStepFlag )
+	{
 #endif
 		PTPMessageSync *old_sync = port->getLastSync();
 
@@ -912,7 +663,7 @@ void PTPMessageSync::processMessage( EtherPort *port )
 	return;
 }
 
-PTPMessageFollowUp::PTPMessageFollowUp( EtherPort *port ) :
+PTPMessageFollowUp::PTPMessageFollowUp( CommonPort *port ) :
 	PTPMessageCommon( port )
 {
 	messageType = FOLLOWUP_MESSAGE;	/* This is an event message */
@@ -923,52 +674,33 @@ PTPMessageFollowUp::PTPMessageFollowUp( EtherPort *port ) :
 	return;
 }
 
+void PTPMessageFollowUp::writeTxBuffer( uint8_t *buf, CommonPort *port )
+{
+	uint8_t *buf_ptr = buf_t + port->getPayloadOffset;
+	followup_msg_t *msg = (decltype(msg))
+		(buf_ptr + PTP_COMMON_HDR_LENGTH);
+
+	messageLength =
+	    PTP_COMMON_HDR_LENGTH + PTP_FOLLOWUP_LENGTH + sizeof(tlv);
+	buildCommonHeader(buf_ptr);
+	msg->preciseOriginTimestamp = preciseOriginTimestamp;
+	msg->preciseOriginTimestamp.hton();
+	msg->tlv = tlv;
+	msg->tlv.setGMTimeBaseIndicator
+		( PLAT_htonl( tlv.getGMTimeBaseIndicator() ));
+}
+
 bool PTPMessageFollowUp::sendPort
 ( EtherPort *port, PortIdentity *destIdentity )
 {
 	uint8_t buf_t[256];
-	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
-	unsigned char tspec_msg_t = 0x0;
-	Timestamp preciseOriginTimestamp_BE;
+
 	memset(buf_t, 0, 256);
-	/* Create packet in buf
-	   Copy in common header */
-	messageLength =
-	    PTP_COMMON_HDR_LENGTH + PTP_FOLLOWUP_LENGTH + sizeof(tlv);
-	tspec_msg_t |= messageType & 0xF;
-	buildCommonHeader(buf_ptr);
-	preciseOriginTimestamp_BE.seconds_ms =
-	    PLAT_htons(preciseOriginTimestamp.seconds_ms);
-	preciseOriginTimestamp_BE.seconds_ls =
-	    PLAT_htonl(preciseOriginTimestamp.seconds_ls);
-	preciseOriginTimestamp_BE.nanoseconds =
-	    PLAT_htonl(preciseOriginTimestamp.nanoseconds);
-	/* Copy in v2 sync specific fields */
-	memcpy(buf_ptr + PTP_FOLLOWUP_SEC_MS(PTP_FOLLOWUP_OFFSET),
-	       &(preciseOriginTimestamp_BE.seconds_ms),
-	       sizeof(preciseOriginTimestamp.seconds_ms));
-	memcpy(buf_ptr + PTP_FOLLOWUP_SEC_LS(PTP_FOLLOWUP_OFFSET),
-	       &(preciseOriginTimestamp_BE.seconds_ls),
-	       sizeof(preciseOriginTimestamp.seconds_ls));
-	memcpy(buf_ptr + PTP_FOLLOWUP_NSEC(PTP_FOLLOWUP_OFFSET),
-	       &(preciseOriginTimestamp_BE.nanoseconds),
-	       sizeof(preciseOriginTimestamp.nanoseconds));
+	writeTxBuffer( buf_t, port );
 
-	/*Change time base indicator to Network Order before sending it*/
-	uint16_t tbi_NO = PLAT_htonl(tlv.getGMTimeBaseIndicator());
-	tlv.setGMTimeBaseIndicator(tbi_NO);
-	tlv.toByteString(buf_ptr + PTP_COMMON_HDR_LENGTH + PTP_FOLLOWUP_LENGTH);
+	GPTP_LOG_VERBOSE( "Follow-Up Time: %s",
+			  preciseOriginTimestamp.toString().c_str() );
 
-	GPTP_LOG_VERBOSE
-		("Follow-Up Time: %u seconds(hi)", preciseOriginTimestamp.seconds_ms);
-	GPTP_LOG_VERBOSE
-		("Follow-Up Time: %u seconds", preciseOriginTimestamp.seconds_ls);
-	GPTP_LOG_VERBOSE
-		("FW-UP Time: %u nanoseconds", preciseOriginTimestamp.nanoseconds);
-	GPTP_LOG_VERBOSE
-		("FW-UP Time: %x seconds", preciseOriginTimestamp.seconds_ls);
-	GPTP_LOG_VERBOSE
-		("FW-UP Time: %x nanoseconds", preciseOriginTimestamp.nanoseconds);
 #ifdef DEBUG
 	GPTP_LOG_VERBOSE("Follow-up Dump:");
 	for (int i = 0; i < messageLength; ++i) {
@@ -1025,7 +757,8 @@ void PTPMessageFollowUp::processMessage( EtherPort *port )
 	}
 	sync->getPortIdentity(&sync_id);
 
-	if (sync->getSequenceId() != sequenceId || sync_id != *sourcePortIdentity)
+	if ( sync->getSequenceId() != sequenceId ||
+	     sync_id != sourcePortIdentity )
 	{
 		unsigned int cnt = 0;
 
@@ -1039,7 +772,7 @@ void PTPMessageFollowUp::processMessage( EtherPort *port )
 		goto done;
 	}
 
-	if (sync->getTimestamp()._version != port->getTimestampVersion())
+	if (sync->getTimestamp().getVersion() != port->getTimestampVersion())
 	{
 		GPTP_LOG_ERROR("Received Follow Up but timestamp version indicates Sync is out of date");
 		goto done;
@@ -1098,17 +831,18 @@ void PTPMessageFollowUp::processMessage( EtherPort *port )
 	device_sync_time_offset =
 		(uint32_t) (TIMESTAMP_TO_NS(device_time) - TIMESTAMP_TO_NS(sync_arrival));
 
-	GPTP_LOG_VERBOSE
-	    ("ptp_message::FollowUp::processMessage System time: %u,%u "
-		 "Device Time: %u,%u",
-	     system_time.seconds_ls, system_time.nanoseconds,
-	     device_time.seconds_ls, device_time.nanoseconds);
+	GPTP_LOG_VERBOSE( "ptp_message::FollowUp::processMessage "
+			  "System time: %s Device Time: %s",
+			  system_time.toString().c_str(),
+			  device_time.toString().c_str() );
 
 	/*Update information on local status structure.*/
 	scaledLastGmFreqChange = (int32_t)((1.0/local_clock_adjustment -1.0) * (1ULL << 41));
 	scaledLastGmPhaseChange.setLSB( tlv.getRateOffset() );
-	port->getClock()->getFUPStatus()->setScaledLastGmFreqChange( scaledLastGmFreqChange );
-	port->getClock()->getFUPStatus()->setScaledLastGmPhaseChange( scaledLastGmPhaseChange );
+	port->getFUPStatus()->setScaledLastGmFreqChange
+		( scaledLastGmFreqChange );
+	port->getFUPStatus()->setScaledLastGmPhaseChange
+		( scaledLastGmPhaseChange );
 
 	if( port->getPortState() == PTP_SLAVE )
 	{
@@ -1160,8 +894,8 @@ done:
 	return;
 }
 
-PTPMessagePathDelayReq::PTPMessagePathDelayReq
-( EtherPort *port ) : PTPMessageCommon( port )
+PTPMessagePathDelayReq::PTPMessagePathDelayReq( EtherPort *port ) :
+	PTPMessageEvent( port )
 {
 	logMeanMessageInterval = 0;
 	control = MESSAGE_OTHER;
@@ -1211,44 +945,31 @@ void PTPMessagePathDelayReq::processMessage( EtherPort *port )
 	resp->setRequestReceiptTimestamp(_timestamp);
 
 	port->getTxLock();
-	resp->sendPort(port, sourcePortIdentity);
+	resp->sendPort(port, &sourcePortIdentity);
 	GPTP_LOG_DEBUG("*** Sent PDelay Response message");
 	port->putTxLock();
 
-	if( resp->getTimestamp()._version != _timestamp._version ) {
-		GPTP_LOG_ERROR("TX timestamp version mismatch: %u/%u",
-			       resp->getTimestamp()._version, _timestamp._version);
-#if 0 // discarding the request could lead to the peer setting the link to non-asCapable
-		delete resp;
-		goto done;
-#endif
+	if( resp->getTimestamp().getVersion() != _timestamp.getVersion() )
+	{
+		GPTP_LOG_ERROR( "TX timestamp version mismatch: %u/%u",
+				resp->getTimestamp().getVersion(),
+				_timestamp.getVersion() );
 	}
 
 	resp_fwup = new PTPMessagePathDelayRespFollowUp(port);
 	port->getPortIdentity(resp_fwup_id);
 	resp_fwup->setPortIdentity(&resp_fwup_id);
 	resp_fwup->setSequenceId(sequenceId);
-	resp_fwup->setRequestingPortIdentity(sourcePortIdentity);
+	resp_fwup->setRequestingPortIdentity(&sourcePortIdentity);
 	resp_fwup->setResponseOriginTimestamp(resp->getTimestamp());
-	long long turnaround;
-	turnaround = (resp->getTimestamp().seconds_ls - _timestamp.seconds_ls)
-		* 1000000000LL;
 
-	GPTP_LOG_VERBOSE("Response Depart(sec): %u",
-			 resp->getTimestamp().seconds_ls);
-	GPTP_LOG_VERBOSE("Request Arrival(sec): %u", _timestamp.seconds_ls);
-	GPTP_LOG_VERBOSE("#1 Correction Field: %Ld", turnaround);
-
-	turnaround += resp->getTimestamp().nanoseconds;
-
-	GPTP_LOG_VERBOSE("#2 Correction Field: %Ld", turnaround);
-
-	turnaround -= _timestamp.nanoseconds;
-
-	GPTP_LOG_VERBOSE("#3 Correction Field: %Ld", turnaround);
+	GPTP_LOG_VERBOSE( "Response Depart: %s",
+			  resp->getTimestamp().toString().c_str() );
+	GPTP_LOG_VERBOSE( "Request Arrival: %s",
+			  _timestamp.toString().c_str() );
 
 	resp_fwup->setCorrectionField(0);
-	resp_fwup->sendPort(port, sourcePortIdentity);
+	resp_fwup->sendPort(port, &sourcePortIdentity);
 
 	GPTP_LOG_DEBUG("*** Sent PDelay Response FollowUp message");
 
@@ -1287,23 +1008,16 @@ bool PTPMessagePathDelayReq::sendPort
 }
 
 PTPMessagePathDelayResp::PTPMessagePathDelayResp
-( EtherPort *port ) : PTPMessageCommon( port )
+( EtherPort *port ) : PTPMessageEvent( port )
 {
     /*TODO: Why 0x7F?*/
 	logMeanMessageInterval = 0x7F;
 	control = MESSAGE_OTHER;
 	messageType = PATH_DELAY_RESP_MESSAGE;
 	versionPTP = GPTP_VERSION;
-	requestingPortIdentity = new PortIdentity();
-
-	flags[PTP_ASSIST_BYTE] |= (0x1 << PTP_ASSIST_BIT);
+	flags.twoStepFlag = 0x1;
 
 	return;
-}
-
-PTPMessagePathDelayResp::~PTPMessagePathDelayResp()
-{
-	delete requestingPortIdentity;
 }
 
 void PTPMessagePathDelayResp::processMessage( EtherPort *port )
@@ -1389,44 +1103,23 @@ bool PTPMessagePathDelayResp::sendPort
 {
 	uint8_t buf_t[256];
 	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
-	unsigned char tspec_msg_t = 0;
-	Timestamp requestReceiptTimestamp_BE;
+	pdelay_resp_msg_t *msg = (decltype(msg))
+		(buf_ptr + PTP_COMMON_HDR_LENGTH);
 	uint32_t link_speed;
 
 	memset(buf_t, 0, 256);
 	// Create packet in buf
 	// Copy in common header
 	messageLength = PTP_COMMON_HDR_LENGTH + PTP_PDELAY_RESP_LENGTH;
-	tspec_msg_t |= messageType & 0xF;
 	buildCommonHeader(buf_ptr);
-	requestReceiptTimestamp_BE.seconds_ms =
-	    PLAT_htons(requestReceiptTimestamp.seconds_ms);
-	requestReceiptTimestamp_BE.seconds_ls =
-	    PLAT_htonl(requestReceiptTimestamp.seconds_ls);
-	requestReceiptTimestamp_BE.nanoseconds =
-	    PLAT_htonl(requestReceiptTimestamp.nanoseconds);
 
-	// Copy in v2 PDelay_Req specific fields
-	requestingPortIdentity->getClockIdentityString
-	  (buf_ptr + PTP_PDELAY_RESP_REQ_CLOCK_ID
-	   (PTP_PDELAY_RESP_OFFSET));
-	requestingPortIdentity->getPortNumberNO
-		((uint16_t *)
-		 (buf_ptr + PTP_PDELAY_RESP_REQ_PORT_ID
-		  (PTP_PDELAY_RESP_OFFSET)));
-	memcpy(buf_ptr + PTP_PDELAY_RESP_SEC_MS(PTP_PDELAY_RESP_OFFSET),
-	       &(requestReceiptTimestamp_BE.seconds_ms),
-	       sizeof(requestReceiptTimestamp.seconds_ms));
-	memcpy(buf_ptr + PTP_PDELAY_RESP_SEC_LS(PTP_PDELAY_RESP_OFFSET),
-	       &(requestReceiptTimestamp_BE.seconds_ls),
-	       sizeof(requestReceiptTimestamp.seconds_ls));
-	memcpy(buf_ptr + PTP_PDELAY_RESP_NSEC(PTP_PDELAY_RESP_OFFSET),
-	       &(requestReceiptTimestamp_BE.nanoseconds),
-	       sizeof(requestReceiptTimestamp.nanoseconds));
+	msg->requestReceiptTimestamp = requestReceiptTimestamp;
+	msg->requestReceiptTimestamp.hton();
+	msg->requestingPortIdentity = requestingPortIdentity;
+	msg->requestingPortIdentity.hton();
 
-	GPTP_LOG_VERBOSE("PDelay Resp Timestamp: %u,%u",
-		   requestReceiptTimestamp.seconds_ls,
-		   requestReceiptTimestamp.nanoseconds);
+	GPTP_LOG_VERBOSE( "PDelay Resp Timestamp: %s",
+			  requestReceiptTimestamp.toString().c_str() );
 
 	port->sendEventPort
 		( PTP_ETHERTYPE, buf_t, messageLength, MCAST_PDELAY,
@@ -1439,13 +1132,13 @@ bool PTPMessagePathDelayResp::sendPort
 void PTPMessagePathDelayResp::setRequestingPortIdentity
 (PortIdentity * identity)
 {
-	*requestingPortIdentity = *identity;
+	requestingPortIdentity = *identity;
 }
 
 void PTPMessagePathDelayResp::getRequestingPortIdentity
 (PortIdentity * identity)
 {
-	*identity = *requestingPortIdentity;
+	*identity = requestingPortIdentity;
 }
 
 PTPMessagePathDelayRespFollowUp::PTPMessagePathDelayRespFollowUp
@@ -1455,14 +1148,8 @@ PTPMessagePathDelayRespFollowUp::PTPMessagePathDelayRespFollowUp
 	control = MESSAGE_OTHER;
 	messageType = PATH_DELAY_FOLLOWUP_MESSAGE;
 	versionPTP = GPTP_VERSION;
-	requestingPortIdentity = new PortIdentity();
 
 	return;
-}
-
-PTPMessagePathDelayRespFollowUp::~PTPMessagePathDelayRespFollowUp()
-{
-	delete requestingPortIdentity;
 }
 
 #define US_PER_SEC 1000000
@@ -1502,6 +1189,10 @@ void PTPMessagePathDelayRespFollowUp::processMessage
 	uint16_t resp_port_number;
 	uint16_t req_port_number;
 
+	int64_t link_delay;
+	Timestamp transaction;
+	Timestamp turnaround;
+
 	if (req == NULL) {
 		/* Shouldn't happen */
 		GPTP_LOG_ERROR
@@ -1522,7 +1213,7 @@ void PTPMessagePathDelayRespFollowUp::processMessage
 	req_clkId = req_id.getClockIdentity();
 	resp_clkId = resp_id.getClockIdentity();
 	resp_id.getPortNumber(&resp_port_number);
-	requestingPortIdentity->getPortNumber(&req_port_number);
+	requestingPortIdentity.getPortNumber(&req_port_number);
 	resp->getPortIdentity(&resp_sourcePortIdentity);
 	getPortIdentity(&fup_sourcePortIdentity);
 
@@ -1583,18 +1274,17 @@ void PTPMessagePathDelayRespFollowUp::processMessage
 	GPTP_LOG_VERBOSE("Response Sequence Id: %u", resp->getSequenceId());
 	GPTP_LOG_VERBOSE("Follow-Up Sequence Id: %u", req->getSequenceId());
 
-	int64_t link_delay;
-	unsigned long long turn_around;
-
 	/* Assume that we are a two step clock, otherwise originTimestamp
 	   may be used */
 	request_tx_timestamp = req->getTimestamp();
-	if( request_tx_timestamp.nanoseconds == INVALID_TIMESTAMP.nanoseconds ) {
+
+	if( request_tx_timestamp == INVALID_TIMESTAMP )
+	{
 		/* Stop processing the packet */
 		goto abort;
 	}
-	if (request_tx_timestamp.nanoseconds ==
-	    PDELAY_PENDING_TIMESTAMP.nanoseconds) {
+	if (request_tx_timestamp == PDELAY_PENDING_TIMESTAMP )
+	{
 		// Defer processing
 		if(
 			port->getLastPDelayRespFollowUp() != NULL &&
@@ -1611,55 +1301,36 @@ void PTPMessagePathDelayRespFollowUp::processMessage
 	response_rx_timestamp = resp->getTimestamp();
 	remote_resp_tx_timestamp = responseOriginTimestamp;
 
-	if( request_tx_timestamp._version != response_rx_timestamp._version ) {
-		GPTP_LOG_ERROR("RX timestamp version mismatch %d/%d",
-			    request_tx_timestamp._version, response_rx_timestamp._version );
+	if( request_tx_timestamp.getVersion() !=
+	    response_rx_timestamp.getVersion() )
+	{
+		GPTP_LOG_ERROR
+			( "RX timestamp version mismatch %d/%d",
+			  request_tx_timestamp.getVersion(),
+			  response_rx_timestamp.getVersion() );
 		goto abort;
 	}
 
 	port->incPdelayCount();
 
-
-	link_delay =
-		((response_rx_timestamp.seconds_ms * 1LL -
-		  request_tx_timestamp.seconds_ms) << 32) * 1000000000;
-	link_delay +=
-		(response_rx_timestamp.seconds_ls * 1LL -
-		 request_tx_timestamp.seconds_ls) * 1000000000;
-	link_delay +=
-		(response_rx_timestamp.nanoseconds * 1LL -
-		 request_tx_timestamp.nanoseconds);
-
-	turn_around =
-		((remote_resp_tx_timestamp.seconds_ms * 1LL -
-		  remote_req_rx_timestamp.seconds_ms) << 32) * 1000000000;
-	turn_around +=
-		(remote_resp_tx_timestamp.seconds_ls * 1LL -
-		 remote_req_rx_timestamp.seconds_ls) * 1000000000;
-	turn_around +=
-		(remote_resp_tx_timestamp.nanoseconds * 1LL -
-		 remote_req_rx_timestamp.nanoseconds);
+	transaction = response_rx_timestamp - request_tx_timestamp;
+	turnaround = remote_resp_tx_timestamp - remote_req_rx_timestamp;
 
 	// Adjust turn-around time for peer to local clock rate difference
 	// TODO: Are these .998 and 1.002 specifically defined in the standard?
 	// Should we create a define for them ?
 	if
 		( port->getPeerRateOffset() > .998 &&
-		  port->getPeerRateOffset() < 1.002 ) {
-		turn_around = (int64_t) (turn_around * port->getPeerRateOffset());
+		  port->getPeerRateOffset() < 1.002 )
+	{
+		link_delay = turnaround.getNsScalar() *
+			port->getPeerRateOffset();
 	}
 
-	GPTP_LOG_VERBOSE
-		("Turn Around Adjustment %Lf",
-		 ((long long)turn_around * port->getPeerRateOffset()) /
-		 1000000000000LL);
-	GPTP_LOG_VERBOSE
-		("Step #1: Turn Around Adjustment %Lf",
-		 ((long long)turn_around * port->getPeerRateOffset()));
-	GPTP_LOG_VERBOSE("Adjusted Peer turn around is %Lu", turn_around);
+	GPTP_LOG_VERBOSE( "Adjusted Peer turn around is %lu", link_delay );
 
 	/* Subtract turn-around time from link delay after rate adjustment */
-	link_delay -= turn_around;
+	link_delay = transaction.getNsScalar() - link_delay;
 	link_delay /= 2;
 	GPTP_LOG_DEBUG( "Link delay: %ld ns", link_delay );
 
@@ -1716,45 +1387,19 @@ bool PTPMessagePathDelayRespFollowUp::sendPort
 {
 	uint8_t buf_t[256];
 	uint8_t *buf_ptr = buf_t + port->getPayloadOffset();
-	unsigned char tspec_msg_t = 0;
-	Timestamp responseOriginTimestamp_BE;
+	pdelay_fwup_msg_t *msg = (decltype(msg))
+		(buf_ptr + PTP_COMMON_HDR_LENGTH);
+
 	memset(buf_t, 0, 256);
 	/* Create packet in buf
 	   Copy in common header */
 	messageLength = PTP_COMMON_HDR_LENGTH + PTP_PDELAY_RESP_LENGTH;
-	tspec_msg_t |= messageType & 0xF;
 	buildCommonHeader(buf_ptr);
-	responseOriginTimestamp_BE.seconds_ms =
-		PLAT_htons(responseOriginTimestamp.seconds_ms);
-	responseOriginTimestamp_BE.seconds_ls =
-		PLAT_htonl(responseOriginTimestamp.seconds_ls);
-	responseOriginTimestamp_BE.nanoseconds =
-		PLAT_htonl(responseOriginTimestamp.nanoseconds);
 
-	// Copy in v2 PDelay_Req specific fields
-	requestingPortIdentity->getClockIdentityString
-		(buf_ptr + PTP_PDELAY_FOLLOWUP_REQ_CLOCK_ID
-		 (PTP_PDELAY_FOLLOWUP_OFFSET));
-	requestingPortIdentity->getPortNumberNO
-		((uint16_t *)
-		 (buf_ptr + PTP_PDELAY_FOLLOWUP_REQ_PORT_ID
-		  (PTP_PDELAY_FOLLOWUP_OFFSET)));
-	memcpy
-		(buf_ptr + PTP_PDELAY_FOLLOWUP_SEC_MS(PTP_PDELAY_FOLLOWUP_OFFSET),
-		 &(responseOriginTimestamp_BE.seconds_ms),
-		 sizeof(responseOriginTimestamp.seconds_ms));
-	memcpy
-		(buf_ptr + PTP_PDELAY_FOLLOWUP_SEC_LS(PTP_PDELAY_FOLLOWUP_OFFSET),
-		 &(responseOriginTimestamp_BE.seconds_ls),
-		 sizeof(responseOriginTimestamp.seconds_ls));
-	memcpy
-		(buf_ptr + PTP_PDELAY_FOLLOWUP_NSEC(PTP_PDELAY_FOLLOWUP_OFFSET),
-		 &(responseOriginTimestamp_BE.nanoseconds),
-		 sizeof(responseOriginTimestamp.nanoseconds));
-
-	GPTP_LOG_VERBOSE("PDelay Resp Timestamp: %u,%u",
-		   responseOriginTimestamp.seconds_ls,
-		   responseOriginTimestamp.nanoseconds);
+	msg->requestingPortIdentity = requestingPortIdentity;
+	msg->requestingPortIdentity.hton();
+	msg->responseOriginTimestamp = responseOriginTimestamp;
+	msg->responseOriginTimestamp.hton();
 
 	port->sendGeneralPort(PTP_ETHERTYPE, buf_t, messageLength, MCAST_PDELAY, destIdentity);
 	port->incCounter_ieee8021AsPortStatTxPdelayResponseFollowUp();
@@ -1765,13 +1410,9 @@ bool PTPMessagePathDelayRespFollowUp::sendPort
 void PTPMessagePathDelayRespFollowUp::setRequestingPortIdentity
 (PortIdentity * identity)
 {
-	*requestingPortIdentity = *identity;
+	requestingPortIdentity = *identity;
 }
 
-
- PTPMessageSignalling::PTPMessageSignalling(void)
-{
-}
 
 PTPMessageSignalling::PTPMessageSignalling
 ( EtherPort *port ) : PTPMessageCommon( port )

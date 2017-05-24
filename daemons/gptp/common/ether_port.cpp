@@ -34,6 +34,7 @@
 #include <ieee1588.hpp>
 
 #include <ether_port.hpp>
+#include <avbap_message.hpp>
 #include <avbts_message.hpp>
 #include <avbts_clock.hpp>
 
@@ -214,8 +215,9 @@ void EtherPort::processMessage
 {
 	GPTP_LOG_VERBOSE("Processing network buffer");
 
+	PTPMessageEvent *event_msg;
 	PTPMessageCommon *msg =
-		buildPTPMessage( buf, (int)length, remote, this );
+		buildPTPMessageCommon( buf, (int)length, remote, this );
 
 	if (msg == NULL)
 	{
@@ -224,15 +226,16 @@ void EtherPort::processMessage
 	}
 	GPTP_LOG_VERBOSE("Processing message");
 
-	if( msg->isEvent() )
+	if(( event_msg = dynamic_cast<decltype(event_msg)>( msg )))
 	{
-		Timestamp rx_timestamp = msg->getTimestamp();
+		Timestamp rx_timestamp = event_msg->getTimestamp();
 		Timestamp phy_compensation = getRxPhyDelay( link_speed );
+
 		GPTP_LOG_DEBUG( "RX PHY compensation: %s sec",
 			 phy_compensation.toString().c_str() );
-		phy_compensation._version = rx_timestamp._version;
+		phy_compensation.setVersion( rx_timestamp.getVersion() );
 		rx_timestamp = rx_timestamp - phy_compensation;
-		msg->setTimestamp( rx_timestamp );
+		event_msg->setTimestamp( rx_timestamp );
 	}
 
 	msg->processMessage(this);
@@ -583,17 +586,15 @@ bool EtherPort::_processEvent( Event e )
 			{
 				Timestamp sync_timestamp = sync->getTimestamp();
 
-				GPTP_LOG_VERBOSE("Successful Sync timestamp");
-				GPTP_LOG_VERBOSE("Seconds: %u",
-						 sync_timestamp.seconds_ls);
-				GPTP_LOG_VERBOSE("Nanoseconds: %u",
-						 sync_timestamp.nanoseconds);
+				GPTP_LOG_VERBOSE
+					( "Successful Sync timestamp: %s",
+					  sync_timestamp.toString().c_str() );
 
 				PTPMessageFollowUp *follow_up = new PTPMessageFollowUp(this);
 				PortIdentity dest_id;
 				getPortIdentity(dest_id);
 
-				follow_up->setClockSourceTime(getClock()->getFUPInfo());
+				follow_up->setClockSourceTime(getFUPInfo());
 				follow_up->setPortIdentity(&dest_id);
 				follow_up->setSequenceId(sync->getSequenceId());
 				follow_up->setPreciseOriginTimestamp
@@ -718,7 +719,7 @@ void EtherPort::becomeMaster( bool annc ) {
 	startSyncIntervalTimer(16000000);
 	GPTP_LOG_STATUS("Switching to Master" );
 
-	clock->updateFUPInfo();
+	updateFUPInfo();
 
 	return;
 }
@@ -740,7 +741,7 @@ void EtherPort::becomeSlave( bool restart_syntonization ) {
 	GPTP_LOG_STATUS("Switching to Slave" );
 	if( restart_syntonization ) clock->newSyntonizationSetPoint();
 
-	getClock()->updateFUPInfo();
+	updateFUPInfo();
 
 	return;
 }

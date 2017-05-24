@@ -123,6 +123,12 @@ void CommonPort::timestamper_reset( void )
 	}
 }
 
+void CommonPort::setQualifiedAnnounce( PTPMessageAnnounce *annc )
+{
+	delete qualified_announce;
+	qualified_announce = annc;
+}
+
 PTPMessageAnnounce *CommonPort::calculateERBest( void )
 {
 	return qualified_announce;
@@ -152,7 +158,7 @@ void CommonPort::recommendState
 			if( changed_external_master ) {
 				GPTP_LOG_STATUS("Changed master!" );
 				clock->newSyntonizationSetPoint();
-				clock->updateFUPInfo();
+				updateFUPInfo();
 				reset_sync = true;
 			}
 		}
@@ -335,7 +341,7 @@ bool CommonPort::processStateChange( Event e )
 	uint8_t LastEBestClockIdentity[PTP_CLOCK_IDENTITY_LENGTH];
 	int number_ports, j;
 	PTPMessageAnnounce *EBest = NULL;
-	char EBestClockIdentity[PTP_CLOCK_IDENTITY_LENGTH];
+	uint8_t EBestClockIdentity[PTP_CLOCK_IDENTITY_LENGTH];
 	CommonPort **ports;
 
 	// Nothing to do if we are slave only
@@ -653,12 +659,10 @@ bool CommonPort::processEvent( Event e )
 				  local_clock, nominal_clock_rate );
 
 			GPTP_LOG_VERBOSE
-				( "port::processEvent(): System time: %u,%u "
-				  "Device Time: %u,%u",
-				  system_time.seconds_ls,
-				  system_time.nanoseconds,
-				  device_time.seconds_ls,
-				  device_time.nanoseconds );
+				( "port::processEvent(): System time: %s "
+				  "Device Time: %s",
+				  system_time.toString().c_str(),
+				  device_time.toString().c_str() );
 
 			local_system_offset =
 				TIMESTAMP_TO_NS(system_time) -
@@ -760,4 +764,13 @@ Timestamp CommonPort::getRxPhyDelay( uint32_t link_speed ) const
 			( phy_delay->at(link_speed).get_rx_delay(), 0, 0 );
 
 	return Timestamp(0, 0, 0);
+}
+
+void CommonPort::updateFUPInfo(void)
+{
+	fup_info.incrementGMTimeBaseIndicator();
+	fup_info.setScaledLastGmFreqChange
+		( fup_status.getScaledLastGmFreqChange() );
+	fup_info.setScaledLastGmPhaseChange
+		( fup_status.getScaledLastGmPhaseChange() );
 }

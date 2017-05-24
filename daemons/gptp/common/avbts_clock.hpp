@@ -36,9 +36,11 @@
 
 #include <stdint.h>
 #include <ieee1588.hpp>
-#include <common_port.hpp>
 #include <avbts_ostimerq.hpp>
 #include <avbts_osipc.hpp>
+#include <avbts_oslock.hpp>
+
+class PTPMessageAnnounce;
 
 /**@file*/
 
@@ -65,6 +67,9 @@
    detection of negative time jump in follow_up message */
 #define NEGATIVE_TIME_JUMP 0.0
 
+/*Exact fit. No padding*/
+#pragma pack(push,1)
+
 /**
  * @brief Provides the clock quality abstraction.
  * Represents the quality of the clock
@@ -78,14 +83,28 @@ struct ClockQuality {
 	unsigned char clockAccuracy; 		/*!< Clock Accuracy - clause 8.6.2.3.
 										  Indicates the expected time accuracy of
 										  a clock master.*/
-	int16_t offsetScaledLogVariance;	/*!< ::Offset Scaled log variance - Clause 8.6.2.4.
-										  Is the scaled, offset representation
-										  of an estimate of the PTP variance. The
-										  PTP variance characterizes the
-										  precision and frequency stability of the clock
-										  master. The PTP variance is the square of
-										  PTPDEV (See B.1.3.2). */
+	uint16_t offsetScaledLogVariance;
+/*!<	::Offset Scaled log variance - Clause 8.6.2.4.
+	Is the scaled, offset representation of an estimate of the
+	PTP variance. The PTP variance characterizes the precision and
+	frequency stability of the clock master. The PTP variance
+	is the square of PTPDEV (See B.1.3.2).
+*/
+
+	void ntoh( void )
+	{
+		offsetScaledLogVariance = PLAT_ntohs
+			( offsetScaledLogVariance );
+	}
+	void hton( void )
+	{
+		offsetScaledLogVariance = PLAT_htons
+			( offsetScaledLogVariance );
+	}
 };
+
+/* back to whatever the previous packing mode was */
+#pragma pack(pop)
 
 /**
  * @brief Provides the 1588 clock interface
@@ -110,7 +129,6 @@ private:
 	uint16_t steps_removed;
 	int64_t offset_from_master;
 	Timestamp one_way_delay;
-	PortIdentity parent_identity;
 	ClockIdentity grandmaster_clock_identity;
 	ClockQuality grandmaster_clock_quality;
 	unsigned char grandmaster_priority1;
@@ -144,21 +162,6 @@ private:
 	bool forceOrdinarySlave;
 	FrequencyRatio _master_local_freq_offset;
 	FrequencyRatio _local_system_freq_offset;
-
-    /**
-     * @brief fup info stores information of the last time
-     * the base time has changed. When that happens
-     * the information from fup_status is copied over
-     * fup_info. The follow-up sendPort method is
-     * supposed to get the information from fup_info
-     * prior to sending a message out.
-     */
-    FollowUpTLV *fup_info;
-
-    /**
-     * @brief fup status has the instantaneous info
-     */
-    FollowUpTLV *fup_status;
 
     OSLock *timerq_lock;
 
@@ -409,72 +412,12 @@ public:
   }
 
   /**
-   * @brief  Sets the follow up info internal object. The fup_info object contains
-   * the last updated information when the frequency or phase have changed
-   * @param  fup Pointer to the FolloUpTLV object.
-   * @return void
-   */
-  void setFUPInfo(FollowUpTLV *fup)
-  {
-      fup_info = fup;
-  }
-
-  /**
-   * @brief  Gets the fup_info pointer
-   * @return fup_info pointer
-   */
-  FollowUpTLV *getFUPInfo(void)
-  {
-      return fup_info;
-  }
-
-  /**
-   * @brief  Sets the follow up status internal object. The fup_status object contains
-   * information about the current frequency/phase aqcuired through the received
-   * follow up messages
-   * @param  fup Pointer to the FollowUpTLV object
-   * @return void
-   */
-  void setFUPStatus(FollowUpTLV *fup)
-  {
-      fup_status = fup;
-  }
-
-  /**
-   * @brief  Gets the fup_status pointer
-   * @return fup_status pointer
-   */
-  FollowUpTLV *getFUPStatus(void)
-  {
-      return fup_status;
-  }
-
-  /**
-   * @brief Updates the follow up info internal object with the current clock source time
-   * status values. This method should be called whenever the clockSource entity time
-   * base changes (IEEE 802.1AS-2011 Clause 9.2)
-   * @return void
-   */
-  void updateFUPInfo(void)
-  {
-      fup_info->incrementGMTimeBaseIndicator();
-      fup_info->setScaledLastGmFreqChange(fup_status->getScaledLastGmFreqChange());
-      fup_info->setScaledLastGmPhaseChange(fup_status->getScaledLastGmPhaseChange());
-  }
-
-  /**
    * @brief  Registers a new IEEE1588 port
    * @param  port  [in] IEEE1588port instance
    * @param  index Port's index
    * @return void
    */
-	void registerPort( CommonPort *port, uint16_t index )
-	{
-	  if (index < MAX_PORTS) {
-		  port_list[index - 1] = port;
-	  }
-	  ++number_ports;
-	}
+	void registerPort( CommonPort *port, uint16_t index );
 
   /**
    * @brief  Gets the current port list instance
@@ -570,58 +513,19 @@ public:
    * @brief  Restart PDelays on all ports
    * @return void
    */
-  void restartPDelayAll() {
-	  int number_ports, i, j = 0;
-	  CommonPort **ports;
-
-	  getPortList( number_ports, ports );
-
-	  for( i = 0; i < number_ports; ++i ) {
-		  while( ports[j] == NULL ) ++j;
-		  ports[j]->restartPDelay();
-	  }
-  }
+	void restartPDelayAll();
 
   /**
    * @brief  Gets all TX locks
    * @return void
    */
-  int getTxLockAll() {
-	  int number_ports, i, j = 0;
-	  CommonPort **ports;
-
-	  getPortList( number_ports, ports );
-
-	  for( i = 0; i < number_ports; ++i ) {
-		  while( ports[j] == NULL ) ++j;
-		  if( ports[j]->getTxLock() == false ) {
-			  return false;
-		  }
-	  }
-
-	  return true;
-  }
+	int getTxLockAll();
 
   /**
    * @brief  Release all TX locks
    * @return void
    */
-  int putTxLockAll() {
-	  int number_ports, i, j = 0;
-	  CommonPort **ports;
-
-	  getPortList( number_ports, ports );
-
-	  for( i = 0; i < number_ports; ++i ) {
-		  while( ports[j] == NULL ) ++j;
-		  if( ports[j]->putTxLock() == false ) {
-			  return false;
-		  }
-	  }
-
-	  return true;
-  }
-
+	int putTxLockAll();
 
   /**
    * @brief  Declares a friend instance of tick_handler method

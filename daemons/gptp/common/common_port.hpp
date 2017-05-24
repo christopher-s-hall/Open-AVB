@@ -35,7 +35,8 @@
 #ifndef COMMON_PORT_HPP
 #define COMMON_PORT_HPP
 
-#include <avbts_message.hpp>
+#include <avbts_clock.hpp>
+
 #include <avbts_osthread.hpp>
 #include <avbts_oscondition.hpp>
 #include <avbts_ostimer.hpp>
@@ -45,7 +46,301 @@
 
 #include <math.h>
 
-class IEEE1588Clock;
+class PTPMessageCommon;
+class PTPMessageAnnounce;
+
+/**
+ * @brief Enumeration multicast type.
+ */
+enum MulticastType {
+	MCAST_NONE,
+	MCAST_PDELAY,
+	MCAST_TEST_STATUS,
+	MCAST_OTHER
+};
+
+class phy_delay_spec_t;
+typedef std::unordered_map<uint32_t, phy_delay_spec_t> phy_delay_map_t;
+
+/*Exact fit. No padding*/
+#pragma pack(push,1)
+
+/**
+ * @brief Provides a scaledNs interface
+ * The scaledNs type represents signed values of time and time interval in units of 2e-16 ns.
+ */
+class scaledNs {
+ private:
+	int32_t ms;
+	uint64_t ls;
+ public:
+	/**
+	 * @brief Builds scaledNs interface
+	 */
+	scaledNs() {
+		ms = 0;
+		ls = 0;
+	}
+
+	/**
+	 * @brief  Gets scaledNs in a byte string format
+	 * @param  byte_str [out] scaledNs value
+	 * @return void
+	 */
+	void toByteString(uint8_t * byte_str) {
+		memcpy(byte_str, this, sizeof(*this));
+	}
+
+	/**
+	 * @brief  Overloads the operator = for this class
+	 * @param  other Value to be attributed to this object's instance.
+	 * @return Reference to scaledNs object
+	 */
+	scaledNs& operator=(const scaledNs& other)
+	{
+		this->ms = other.ms;
+		this->ls = other.ls;
+
+		return *this;
+	}
+
+	/**
+	 * @brief  Set the lowest 64bits from the scaledNs object
+	 * @param  lsb Value to be set
+	 * @return void
+	 */
+	void setLSB(uint64_t lsb)
+	{
+		this->ls = lsb;
+	}
+
+	/**
+	 * @brief  Set the highest 32bits of the scaledNs object
+	 * @param  msb 32-bit signed integer to be set
+	 * @return void
+	 */
+	void setMSB(int32_t msb)
+	{
+		this->ms = msb;
+	}
+};
+
+/**
+ * @brief Provides a follow-up TLV interface back to the previous packing mode
+ */
+class FollowUpTLV {
+ private:
+	uint16_t tlvType;
+	uint16_t lengthField;
+	uint8_t organizationId[3];
+	uint8_t organizationSubType_ms;
+	uint16_t organizationSubType_ls;
+	int32_t cumulativeScaledRateOffset;
+	uint16_t gmTimeBaseIndicator;
+	scaledNs scaledLastGmPhaseChange;
+	int32_t scaledLastGmFreqChange;
+ public:
+	/**
+	 * @brief Builds the FollowUpTLV interface
+	 */
+	FollowUpTLV() {
+		tlvType = PLAT_htons(0x3);
+		lengthField = PLAT_htons(28);
+		organizationId[0] = '\x00';
+		organizationId[1] = '\x80';
+		organizationId[2] = '\xC2';
+		organizationSubType_ms = 0;
+		organizationSubType_ls = PLAT_htons(1);
+		cumulativeScaledRateOffset = PLAT_htonl(0);
+		gmTimeBaseIndicator = 0;
+		scaledLastGmFreqChange = PLAT_htonl(0);
+	}
+
+	/**
+	 * @brief  Gets FollowUpTLV information in a byte string format
+	 * @param  byte_str [out] FollowUpTLV values
+	 */
+	void toByteString(uint8_t * byte_str) {
+		memcpy(byte_str, this, sizeof(*this));
+	}
+
+	/**
+	 * @brief  Gets the cummulative scaledRateOffset
+	 * @return 32 bit signed value with the rate offset information.
+	 */
+	int32_t getRateOffset() {
+		return cumulativeScaledRateOffset;
+	}
+
+	/**
+	 * @brief Gets the gmTimeBaseIndicator
+	 * @return 16 bit unsigned value of the gmTimeBaseIndicator
+	 *         information
+	 */
+	uint16_t getGmTimeBaseIndicator() {
+		return gmTimeBaseIndicator;
+	}
+
+	/**
+	 * @brief  Updates the scaledLastGmFreqChanged private member
+	 * @param  val Value to be set
+	 * @return void
+	 */
+	void setScaledLastGmFreqChange(int32_t val)
+	{
+		scaledLastGmFreqChange = PLAT_htonl(val);
+	}
+
+	/**
+	 * @brief  Gets the current scaledLastGmFreqChanged value
+	 * @return scaledLastGmFreqChange
+	 */
+	int32_t getScaledLastGmFreqChange(void)
+	{
+		return scaledLastGmFreqChange;
+	}
+
+	/**
+	 * @brief  Sets the gmTimeBaseIndicator private member
+	 * @param  tbi Value to be set
+	 * @return void
+	 */
+	void setGMTimeBaseIndicator(uint16_t tbi)
+	{
+		gmTimeBaseIndicator = tbi;
+	}
+
+	/**
+	 * @brief  Incremets the Time Base Indicator member
+	 * @return void
+	 */
+	void incrementGMTimeBaseIndicator(void)
+	{
+		++gmTimeBaseIndicator;
+	}
+
+	/**
+	 * @brief  Gets the current gmTimeBaseIndicator value
+	 * @return gmTimeBaseIndicator
+	 */
+	uint16_t getGMTimeBaseIndicator(void)
+	{
+		return gmTimeBaseIndicator;
+	}
+
+	/**
+	 * @brief  Sets the scaledLastGmPhaseChange private member
+	 * @param  pc Value to be set
+	 * @return void
+	 */
+	void setScaledLastGmPhaseChange(scaledNs pc)
+	{
+		scaledLastGmPhaseChange = pc;
+	}
+
+	/**
+	 * @brief  Gets the scaledLastGmPhaseChange private member value
+	 * @return scaledLastGmPhaseChange value
+	 */
+	scaledNs getScaledLastGmPhaseChange(void)
+	{
+		return scaledLastGmPhaseChange;
+	}
+};
+
+/* back to whatever the previous packing mode was */
+#pragma pack(pop)
+
+/**
+ * @brief Structure for initializing the port class
+ */
+typedef struct {
+	/* clock IEEE1588Clock instance */
+	IEEE1588Clock * clock;
+
+	/* index Interface index */
+	uint16_t index;
+
+	/* timestamper Hardware timestamper instance */
+	CommonTimestamper * timestamper;
+
+	/* net_label Network label */
+	InterfaceLabel *net_label;
+
+	/* automotive_profile set the AVnu automotive profile */
+	bool automotive_profile;
+
+	/* Set to true if the port is the grandmaster. Used for fixed GM in
+	 * the the AVnu automotive profile */
+	bool isGM;
+
+	/* Set to true if the port is the grandmaster. Used for fixed GM in
+	 * the the AVnu automotive profile */
+	bool testMode;
+
+	/* Set to true if the port's network interface is up. Used to filter
+	 * false LINKUP/LINKDOWN events */
+	bool linkUp;
+
+	/* gPTP 10.2.4.4 */
+	char initialLogSyncInterval;
+
+	/* gPTP 11.5.2.2 */
+	char initialLogPdelayReqInterval;
+
+	/* CDS 6.2.1.5 */
+	char operLogPdelayReqInterval;
+
+	/* CDS 6.2.1.6 */
+	char operLogSyncInterval;
+
+	/* condition_factory OSConditionFactory instance */
+	OSConditionFactory * condition_factory;
+
+	/* thread_factory OSThreadFactory instance */
+	OSThreadFactory * thread_factory;
+
+	/* timer_factory OSTimerFactory instance */
+	OSTimerFactory * timer_factory;
+
+	/* lock_factory OSLockFactory instance */
+	OSLockFactory * lock_factory;
+
+	/* phy delay */
+	phy_delay_map_t const *phy_delay;
+
+	/* sync receipt threshold */
+	unsigned int syncReceiptThreshold;
+
+	/* neighbor delay threshold */
+	int64_t neighborPropDelayThreshold;
+} PortInit_t;
+
+
+/**
+ * @brief Structure for Port Counters
+ */
+typedef struct {
+	int32_t ieee8021AsPortStatRxSyncCount;
+	int32_t ieee8021AsPortStatRxFollowUpCount;
+	int32_t ieee8021AsPortStatRxPdelayRequest;
+	int32_t ieee8021AsPortStatRxPdelayResponse;
+	int32_t ieee8021AsPortStatRxPdelayResponseFollowUp;
+	int32_t ieee8021AsPortStatRxAnnounce;
+	int32_t ieee8021AsPortStatRxPTPPacketDiscard;
+	int32_t ieee8021AsPortStatRxSyncReceiptTimeouts;
+	int32_t ieee8021AsPortStatAnnounceReceiptTimeouts;
+	int32_t ieee8021AsPortStatPdelayAllowedLostResponsesExceeded;
+	int32_t ieee8021AsPortStatTxSyncCount;
+	int32_t ieee8021AsPortStatTxFollowUpCount;
+	int32_t ieee8021AsPortStatTxPdelayRequest;
+	int32_t ieee8021AsPortStatTxPdelayResponse;
+	int32_t ieee8021AsPortStatTxPdelayResponseFollowUp;
+	int32_t ieee8021AsPortStatTxAnnounce;
+} PortCounters_t;
+
+/*Exact fit. No padding*/
+#pragma pack(push,1)
 
 /**
  * @brief PortIdentity interface
@@ -62,16 +357,19 @@ public:
 	PortIdentity() { };
 
 	/**
-	 * @brief  Constructs PortIdentity interface.
-	 * @param  clock_id Clock ID value as defined at IEEE 802.1AS Clause
-	 * 8.5.2.2
-	 * @param  portNumber Port Number
+	 * @brief Changes port number to network order
 	 */
-	PortIdentity(uint8_t * clock_id, uint16_t * portNumber)
+	void hton()
 	{
-		this->portNumber = *portNumber;
+		this->portNumber = PLAT_htons(this->portNumber);
+	}
+
+	/**
+	 * @brief Changes port number to host order
+	 */
+	void ntoh()
+	{
 		this->portNumber = PLAT_ntohs(this->portNumber);
-		this->clock_id.set(clock_id);
 	}
 
 	/**
@@ -195,96 +493,8 @@ public:
 	}
 };
 
-class phy_delay_spec_t;
-typedef std::unordered_map<uint32_t, phy_delay_spec_t> phy_delay_map_t;
-
-/**
- * @brief Structure for initializing the port class
- */
-typedef struct {
-	/* clock IEEE1588Clock instance */
-	IEEE1588Clock * clock;
-
-	/* index Interface index */
-	uint16_t index;
-
-	/* timestamper Hardware timestamper instance */
-	CommonTimestamper * timestamper;
-
-	/* net_label Network label */
-	InterfaceLabel *net_label;
-
-	/* automotive_profile set the AVnu automotive profile */
-	bool automotive_profile;
-
-	/* Set to true if the port is the grandmaster. Used for fixed GM in
-	 * the the AVnu automotive profile */
-	bool isGM;
-
-	/* Set to true if the port is the grandmaster. Used for fixed GM in
-	 * the the AVnu automotive profile */
-	bool testMode;
-
-	/* Set to true if the port's network interface is up. Used to filter
-	 * false LINKUP/LINKDOWN events */
-	bool linkUp;
-
-	/* gPTP 10.2.4.4 */
-	char initialLogSyncInterval;
-
-	/* gPTP 11.5.2.2 */
-	char initialLogPdelayReqInterval;
-
-	/* CDS 6.2.1.5 */
-	char operLogPdelayReqInterval;
-
-	/* CDS 6.2.1.6 */
-	char operLogSyncInterval;
-
-	/* condition_factory OSConditionFactory instance */
-	OSConditionFactory * condition_factory;
-
-	/* thread_factory OSThreadFactory instance */
-	OSThreadFactory * thread_factory;
-
-	/* timer_factory OSTimerFactory instance */
-	OSTimerFactory * timer_factory;
-
-	/* lock_factory OSLockFactory instance */
-	OSLockFactory * lock_factory;
-
-	/* phy delay */
-	phy_delay_map_t const *phy_delay;
-
-	/* sync receipt threshold */
-	unsigned int syncReceiptThreshold;
-
-	/* neighbor delay threshold */
-	int64_t neighborPropDelayThreshold;
-} PortInit_t;
-
-
-/**
- * @brief Structure for Port Counters
- */
-typedef struct {
-	int32_t ieee8021AsPortStatRxSyncCount;
-	int32_t ieee8021AsPortStatRxFollowUpCount;
-	int32_t ieee8021AsPortStatRxPdelayRequest;
-	int32_t ieee8021AsPortStatRxPdelayResponse;
-	int32_t ieee8021AsPortStatRxPdelayResponseFollowUp;
-	int32_t ieee8021AsPortStatRxAnnounce;
-	int32_t ieee8021AsPortStatRxPTPPacketDiscard;
-	int32_t ieee8021AsPortStatRxSyncReceiptTimeouts;
-	int32_t ieee8021AsPortStatAnnounceReceiptTimeouts;
-	int32_t ieee8021AsPortStatPdelayAllowedLostResponsesExceeded;
-	int32_t ieee8021AsPortStatTxSyncCount;
-	int32_t ieee8021AsPortStatTxFollowUpCount;
-	int32_t ieee8021AsPortStatTxPdelayRequest;
-	int32_t ieee8021AsPortStatTxPdelayResponse;
-	int32_t ieee8021AsPortStatTxPdelayResponseFollowUp;
-	int32_t ieee8021AsPortStatTxAnnounce;
-} PortCounters_t;
+/* back to whatever the previous packing mode was */
+#pragma pack(pop)
 
 /**
  * @brief Port functionality common to all network media
@@ -347,6 +557,21 @@ private:
 	OSLock *syncReceiptTimerLock;
 	OSLock *syncIntervalTimerLock;
 	OSLock *announceIntervalTimerLock;
+
+	/**
+	 * @brief fup info stores information of the last time
+	 * the base time has changed. When that happens
+	 * the information from fup_status is copied over
+	 * fup_info. The follow-up sendPort method is
+	 * supposed to get the information from fup_info
+	 * prior to sending a message out.
+	 */
+	FollowUpTLV fup_info;
+
+	/**
+	 * @brief fup status has the instantaneous info
+	 */
+	FollowUpTLV fup_status;
 
 protected:
 	static const int64_t INVALID_LINKDELAY = 3600000000000;
@@ -989,14 +1214,14 @@ public:
 
 	/**
 	 * @brief Receive frame
+	 * @addr [out]		address the frame is from
+	 * @payload [out]	buffer to write frame
+	 * @length [in,out]	length of recv buffer in, frame recv length out
 	 */
 	net_result recv
-	( LinkLayerAddress *addr, uint8_t *payload, size_t &length,
-	  uint32_t &link_speed )
+	( LinkLayerAddress *addr, uint8_t *payload, size_t &length )
 	{
-		net_result result = net_iface->nrecv( addr, payload, length );
-		link_speed = this->link_speed;
-		return result;
+		return net_iface->nrecv( addr, payload, length );
 	}
 
 	/**
@@ -1094,11 +1319,7 @@ public:
 	 * @param  annc PTP announce message
 	 * @return void
 	 */
-	void setQualifiedAnnounce( PTPMessageAnnounce *annc )
-	{
-		delete qualified_announce;
-		qualified_announce = annc;
-	}
+	void setQualifiedAnnounce( PTPMessageAnnounce *annc );
 
 	/**
 	 * @brief  Switches port to a gPTP master
@@ -1376,6 +1597,33 @@ public:
 	 * @brief Returns RX PHY delay
 	 */
 	Timestamp getRxPhyDelay( uint32_t link_speed ) const;
+
+	/**
+	 * @brief  Gets the fup_info pointer
+	 * @return fup_info pointer
+	 */
+	FollowUpTLV *getFUPInfo(void)
+	{
+		return &fup_info;
+	}
+
+	/**
+	 * @brief  Gets the fup_status pointer
+	 * @return fup_status pointer
+	 */
+	FollowUpTLV *getFUPStatus(void)
+	{
+		return &fup_status;
+	}
+
+	/**
+	 * @brief Updates the follow up info internal object with the current
+	 *	clock source time status values. This method should be called
+	 *	whenever the clockSource entity time base changes
+	 *	(IEEE 802.1AS-2011 Clause 9.2)
+	 * @return void
+	 */
+	void updateFUPInfo(void);
 };
 
 /**
@@ -1451,5 +1699,17 @@ public:
 		return rx_delay;
 	}
 };
+
+/**
+ * @brief  Builds a PTP message
+ * @param  buf [in] message buffer to send
+ * @param  size message length
+ * @param  remote Destination link layer address
+ * @param  port [in] IEEE1588 port
+ * @return PTP message instance of PTPMessageCommon
+ */
+PTPMessageCommon *buildPTPMessageCommon
+( char *buf, int size, LinkLayerAddress *remote,
+  CommonPort *port );
 
 #endif/*COMMON_PORT_HPP*/

@@ -35,7 +35,6 @@
 #define ETHER_PORT_HPP
 
 #include <ieee1588.hpp>
-#include <avbap_message.hpp>
 
 #include <avbts_ostimer.hpp>
 #include <avbts_oslock.hpp>
@@ -51,6 +50,11 @@
 #include <list>
 
 #include <common_port.hpp>
+
+class PTPMessagePathDelayReq;
+class PTPMessagePathDelayResp;
+class PTPMessagePathDelayRespFollowUp;
+class PTPMessageSync;
 
 /**@file*/
 
@@ -74,6 +78,70 @@ typedef enum {
 	V2_E2E,
 	V2_P2P
 } PortType;
+
+/**
+ * @brief Automotive Profile Test Status Station State
+ */
+typedef enum {
+	STATION_STATE_RESERVED,
+	STATION_STATE_ETHERNET_READY,
+	STATION_STATE_AVB_SYNC,
+	STATION_STATE_AVB_MEDIA_READY,
+} StationState_t;
+
+/**
+ * @brief Enumeration message type. IEEE 1588-2008 Clause 13.3.2.2
+ */
+enum MessageType {
+	SYNC_MESSAGE = 0,
+	DELAY_REQ_MESSAGE = 1,
+	PATH_DELAY_REQ_MESSAGE = 2,
+	PATH_DELAY_RESP_MESSAGE = 3,
+	FOLLOWUP_MESSAGE = 8,
+	DELAY_RESP_MESSAGE = 9,
+	PATH_DELAY_FOLLOWUP_MESSAGE = 0xA,
+	ANNOUNCE_MESSAGE = 0xB,
+	SIGNALLING_MESSAGE = 0xC,
+	MANAGEMENT_MESSAGE = 0xD,
+};
+
+class PTPMessageId {
+	MessageType _messageType;
+	uint16_t _sequenceId;
+public:
+	PTPMessageId() { };
+	PTPMessageId(MessageType messageType, uint16_t sequenceId) :
+		_messageType(messageType),_sequenceId(sequenceId) { }
+	PTPMessageId(const PTPMessageId& a) {
+		_messageType = a._messageType;
+		_sequenceId = a._sequenceId;
+	}
+
+	MessageType getMessageType(void) {
+		return _messageType;
+	}
+	void setMessageType(MessageType messageType) {
+		_messageType = messageType;
+	}
+
+	uint16_t getSequenceId(void) {
+		return _sequenceId;
+	}
+	void setSequenceId(uint16_t sequenceId) {
+		_sequenceId = sequenceId;
+	}
+
+	bool operator!=(const PTPMessageId & cmp) const {
+		return
+			this->_sequenceId != cmp._sequenceId ||
+			this->_messageType != cmp._messageType ? true : false;
+	}
+	bool operator==(const PTPMessageId & cmp)const {
+		return
+			this->_sequenceId == cmp._sequenceId &&
+			this->_messageType == cmp._messageType ? true : false;
+	}
+};
 
 /**
  * @brief Provides a map for the identityMap member of EtherPort
@@ -246,6 +314,18 @@ protected:
 	 * @return Its an infinite loop. Returns NULL in case of error.
 	 */
 	void *openPort( EtherPort *port );
+
+	/**
+	 * @brief Receive frame returning link_speed
+	 */
+	net_result recv
+	( LinkLayerAddress *addr, uint8_t *payload, size_t &length,
+	  uint32_t &link_speed )
+	{
+		net_result result = CommonPort::recv( addr, payload, length );
+		link_speed = getLinkSpeed();
+		return result;
+	}
 
 	/**
 	 * @brief  Sends and event to a IEEE1588 port. It includes timestamp

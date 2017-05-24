@@ -36,6 +36,7 @@
 #include <avbts_clock.hpp>
 #include <avbts_oslock.hpp>
 #include <avbts_ostimerq.hpp>
+#include <avbts_message.hpp>
 
 #include <stdio.h>
 
@@ -115,9 +116,6 @@ IEEE1588Clock::IEEE1588Clock
 
 	// This should be done LAST!! to pass fully initialized clock object
 	timerq = timerq_factory->createOSTimerQueue( this );
-
-    fup_info = new FollowUpTLV();
-    fup_status = new FollowUpTLV();
 
 	return;
 }
@@ -480,7 +478,7 @@ bool IEEE1588Clock::isBetterThan(PTPMessageAnnounce * msg)
 	that1[5] = msg->getGrandmasterPriority2();
 
 	clock_identity.getIdentityString(this1 + 6);
-	msg->getGrandmasterIdentity((char *)that1 + 6);
+	msg->getGrandmasterIdentity(that1 + 6);
 
 #if 0
 	GPTP_LOG_DEBUG("(Clk)Us: ");
@@ -498,3 +496,58 @@ IEEE1588Clock::~IEEE1588Clock(void)
 {
 	// Do nothing
 }
+
+void IEEE1588Clock::registerPort( CommonPort *port, uint16_t index )
+{
+	if (index < MAX_PORTS) {
+		port_list[index - 1] = port;
+	}
+	++number_ports;
+}
+
+void IEEE1588Clock::restartPDelayAll()
+{
+	int number_ports, i, j = 0;
+	CommonPort **ports;
+
+	getPortList( number_ports, ports );
+
+	for( i = 0; i < number_ports; ++i ) {
+		while( ports[j] == NULL ) ++j;
+		ports[j]->restartPDelay();
+	}
+}
+
+int IEEE1588Clock::getTxLockAll()
+{
+	int number_ports, i, j = 0;
+	CommonPort **ports;
+
+	getPortList( number_ports, ports );
+
+	for( i = 0; i < number_ports; ++i ) {
+		while( ports[j] == NULL ) ++j;
+		if( ports[j]->getTxLock() == false ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int IEEE1588Clock::putTxLockAll()
+{
+	  int number_ports, i, j = 0;
+	  CommonPort **ports;
+
+	  getPortList( number_ports, ports );
+
+	  for( i = 0; i < number_ports; ++i ) {
+		  while( ports[j] == NULL ) ++j;
+		  if( ports[j]->putTxLock() == false ) {
+			  return false;
+		  }
+	  }
+
+	  return true;
+  }

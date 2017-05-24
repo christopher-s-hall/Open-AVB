@@ -42,6 +42,15 @@
 typedef void (*ostimerq_handler) (void *);
 
 class IEEE1588Clock;
+class CommonPort;
+
+/**
+ * @brief Defines an event descriptor type
+ */
+typedef struct {
+	CommonPort *port;	//!< Media Dependent Ether Port
+	Event event;	//!< Event enumeration
+} event_descriptor_t;
 
 /**
  * @brief OSTimerQueue generic interface

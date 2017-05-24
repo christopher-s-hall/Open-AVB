@@ -115,7 +115,7 @@ public:
 	 * @return void
 	 */
 	void pushRXTimestamp( Timestamp *tstamp ) {
-		tstamp->_version = version;
+		tstamp->setVersion( version );
 		rxTimestampList.push_front(*tstamp);
 	}
 

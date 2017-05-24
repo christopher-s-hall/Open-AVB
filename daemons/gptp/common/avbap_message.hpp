@@ -66,17 +66,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 /**
- * @brief Automotive Profile Test Status Station State
- */
-typedef enum {
-	STATION_STATE_RESERVED,
-	STATION_STATE_ETHERNET_READY,
-	STATION_STATE_AVB_SYNC,
-	STATION_STATE_AVB_MEDIA_READY,
-} StationState_t;
-
-
-/**
  * @brief Provides a class for building the ANvu Automotive
  * Profile Test Status message
  */
